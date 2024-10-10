@@ -1,15 +1,18 @@
 # Copyright 2024 Marimo. All rights reserved.
 from __future__ import annotations
 
+import inspect
 import random
 import string
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
     Iterable,
     Iterator,
+    List,
+    Literal,
     Mapping,
     Optional,
 )
@@ -67,6 +70,11 @@ class _AppConfig:
 
     # CSS file, relative to the app file
     css_file: Optional[str] = None
+
+    # Whether to automatically download the app as HTML and Markdown
+    auto_download: List[Literal["html", "markdown"]] = field(
+        default_factory=list
+    )
 
     @staticmethod
     def from_untrusted_dict(updates: dict[str, Any]) -> _AppConfig:
@@ -171,12 +179,19 @@ class App:
         # Set as a private attribute as not to pollute AppConfig or kwargs.
         self._anonymous_file = False
 
+        # Filename is derived from the callsite of the app
+        self._filename: str | None = None
+        try:
+            self._filename = inspect.getfile(inspect.stack()[1].frame)
+        except Exception:
+            ...
         self._app_kernel_runner: AppKernelRunner | None = None
 
     def cell(
         self,
         func: Callable[..., Any] | None = None,
         *,
+        column: Optional[int] = None,
         disabled: bool = False,
         hide_code: bool = False,
         **kwargs: Any,
@@ -208,7 +223,7 @@ class App:
         del kwargs
 
         return self._cell_manager.cell_decorator(
-            func, disabled, hide_code, app=InternalApp(self)
+            func, column, disabled, hide_code, app=InternalApp(self)
         )
 
     def _unparsable_cell(
@@ -288,7 +303,9 @@ class App:
         self,
     ) -> tuple[Sequence[Any], Mapping[str, Any]]:
         self._maybe_initialize()
-        outputs, glbls = AppScriptRunner(InternalApp(self)).run()
+        outputs, glbls = AppScriptRunner(
+            InternalApp(self), filename=self._filename
+        ).run()
         return (self._flatten_outputs(outputs), self._globals_to_defs(glbls))
 
     async def _run_cell_async(
@@ -424,11 +441,14 @@ class CellManager:
     def cell_decorator(
         self,
         func: Callable[..., Any] | None,
+        column: Optional[int],
         disabled: bool,
         hide_code: bool,
         app: InternalApp | None = None,
     ) -> Cell | Callable[..., Cell]:
-        cell_config = CellConfig(disabled=disabled, hide_code=hide_code)
+        cell_config = CellConfig(
+            column=column, disabled=disabled, hide_code=hide_code
+        )
 
         def _register(func: Callable[..., Any]) -> Cell:
             cell = cell_factory(

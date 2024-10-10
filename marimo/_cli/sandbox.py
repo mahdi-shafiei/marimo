@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional, cast
 
 import click
 
-from marimo import _loggers
+from marimo import __version__, _loggers
+from marimo._cli.file_path import FileContentReader
+from marimo._cli.print import bold, echo, green
+from marimo._config.settings import GLOBAL_SETTINGS
 from marimo._dependencies.dependencies import DependencyManager
 
 LOGGER = _loggers.marimo_logger()
@@ -22,67 +25,95 @@ REGEX = (
 )
 
 
-def run_in_sandbox(
-    args: List[str],
-    name: Optional[str] = None,
-) -> int:
-    if not DependencyManager.which("uv"):
-        raise click.UsageError("uv must be installed to use --sandbox")
-
-    cmd = ["marimo"] + args
-    cmd.remove("--sandbox")
-
-    # If name if a filepath, parse the dependencies from the file
-    dependencies = []
-    if name is not None and os.path.isfile(name):
-        with open(name) as f:
-            dependencies = _get_dependencies(f.read()) or []
-
-    # The sandbox needs to manage marimo, too, to make sure
-    # that the outer environment doesn't leak into the sandbox.
-    if "marimo" not in dependencies:
-        dependencies.append("marimo")
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, suffix=".txt"
-    ) as temp_file:
-        temp_file.write("\n".join(dependencies))
-        temp_file_path = temp_file.name
-    # Clean up the temporary file after the subprocess has run
-    atexit.register(lambda: os.unlink(temp_file_path))
-
-    cmd = [
-        "uv",
-        "run",
-        "--isolated",
-        "--with-requirements",
-        temp_file_path,
-    ] + cmd
-
-    click.echo(f"Running in a sandbox: {' '.join(cmd)}")
-
-    process = subprocess.Popen(cmd)
-
-    def handler(sig: int, frame: Any) -> None:
-        del sig
-        del frame
-        if sys.platform == "win32":
-            os.kill(process.pid, signal.CTRL_C_EVENT)
-        else:
-            os.kill(process.pid, signal.SIGINT)
-
-    signal.signal(signal.SIGINT, handler)
-
-    return process.wait()
-
-
 def _get_dependencies(script: str) -> List[str] | None:
+    """Get dependencies from string representation of script."""
     try:
         pyproject = _read_pyproject(script) or {}
-        return cast(List[str], pyproject.get("dependencies", []))
+        return _pyproject_toml_to_requirements_txt(pyproject)
     except Exception as e:
         LOGGER.warning(f"Failed to parse dependencies: {e}")
         return None
+
+
+def _pyproject_toml_to_requirements_txt(
+    pyproject: Dict[str, Any],
+) -> List[str]:
+    """
+    Convert a pyproject.toml file to a requirements.txt file.
+
+    If there is a `[tool.uv.sources]` section, we resolve the dependencies
+    to their corresponding source.
+
+    # dependencies = [
+    #     "python-gcode",
+    # ]
+    #
+    # [tool.uv.sources]
+    # python-gcode = { git = "https://github.com/fetlab/python_gcode", rev = "new" }
+    """  # noqa: E501
+    dependencies = cast(List[str], pyproject.get("dependencies", []))
+    if not dependencies:
+        return []
+
+    uv_sources = pyproject.get("tool", {}).get("uv", {}).get("sources", {})
+
+    for dependency, source in uv_sources.items():
+        # Find the index of the dependency. This may have a version
+        # attached, so we cannot do .index()
+        dep_index: int | None = None
+        for i, dep in enumerate(dependencies):
+            if (
+                dep == dependency
+                or dep.startswith(f"{dependency}==")
+                or dep.startswith(f"{dependency}<")
+                or dep.startswith(f"{dependency}>")
+                or dep.startswith(f"{dependency}~")
+            ):
+                dep_index = i
+                break
+
+        if dep_index is None:
+            continue
+
+        new_dependency = None
+
+        # Handle git dependencies
+        if "git" in source:
+            git_url = f"git+{source['git']}"
+            ref = (
+                source.get("rev") or source.get("branch") or source.get("tag")
+            )
+            new_dependency = (
+                f"{dependency} @ {git_url}@{ref}"
+                if ref
+                else f"{dependency} @ {git_url}"
+            )
+        # Handle local paths
+        elif "path" in source:
+            new_dependency = f"{dependency} @ {source['path']}"
+
+        # Handle URLs
+        elif "url" in source:
+            new_dependency = f"{dependency} @ {source['url']}"
+
+        if new_dependency:
+            if source.get("marker"):
+                new_dependency += f"; {source['marker']}"
+
+            dependencies[dep_index] = new_dependency
+
+    return dependencies
+
+
+def get_dependencies_from_filename(name: str) -> List[str]:
+    try:
+        contents, _ = FileContentReader().read_file(name)
+        return _get_dependencies(contents) or []
+    except FileNotFoundError:
+        return []
+    except Exception:
+        LOGGER.warning(f"Failed to read dependencies from {name}")
+        return []
 
 
 def _read_pyproject(script: str) -> Dict[str, Any] | None:
@@ -107,3 +138,110 @@ def _read_pyproject(script: str) -> Dict[str, Any] | None:
         return tomlkit.parse(content)
     else:
         return None
+
+
+def prompt_run_in_sandbox(name: str | None) -> bool:
+    if GLOBAL_SETTINGS.MANAGE_SCRIPT_METADATA:
+        return False
+
+    if name is None:
+        return False
+
+    dependencies = get_dependencies_from_filename(name)
+    if not dependencies:
+        return False
+
+    # Notebook has inlined dependencies.
+    if DependencyManager.which("uv"):
+        if GLOBAL_SETTINGS.YES:
+            return True
+
+        return click.confirm(
+            "This notebook has inlined package dependencies.\n"
+            + green(
+                "Run in a sandboxed venv containing this notebook's "
+                "dependencies?",
+                bold=True,
+            ),
+            default=True,
+        )
+    else:
+        echo(
+            bold(
+                "This notebook has inlined package dependencies. \n"
+                + "Consider installing uv so that marimo can create a "
+                "temporary venv with the notebook's packages: "
+                "https://github.com/astral-sh/uv"
+            )
+        )
+    return False
+
+
+def run_in_sandbox(
+    args: List[str],
+    name: Optional[str] = None,
+) -> int:
+    if not DependencyManager.which("uv"):
+        raise click.UsageError("uv must be installed to use --sandbox")
+
+    cmd = ["marimo"] + args
+    if "--sandbox" in cmd:
+        cmd.remove("--sandbox")
+
+    # If name if a filepath, parse the dependencies from the file
+    dependencies = (
+        get_dependencies_from_filename(name) if name is not None else []
+    )
+
+    # The sandbox needs to manage marimo, too, to make sure
+    # that the outer environment doesn't leak into the sandbox.
+    if "marimo" not in dependencies:
+        dependencies.append("marimo")
+
+    # Rename marimo to marimo=={__version__}
+    index_of_marimo = dependencies.index("marimo")
+    if index_of_marimo != -1:
+        dependencies[index_of_marimo] = f"marimo=={__version__}"
+
+        # During development, you can comment this out to install an
+        # editable version of marimo assuming you are in the marimo directory
+        # DO NOT COMMIT THIS WHEN SUBMITTING PRs
+        # dependencies[index_of_marimo] = "-e ."
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", delete=False, suffix=".txt"
+    ) as temp_file:
+        temp_file.write("\n".join(dependencies))
+        temp_file_path = temp_file.name
+    # Clean up the temporary file after the subprocess has run
+    atexit.register(lambda: os.unlink(temp_file_path))
+
+    cmd = [
+        "uv",
+        "run",
+        "--isolated",
+        # sandboxed notebook shouldn't pick up existing pyproject.toml,
+        # which may conflict with the sandbox requirements
+        "--no-project",
+        "--with-requirements",
+        temp_file_path,
+    ] + cmd
+
+    echo(f"Running in a sandbox: {' '.join(cmd)}")
+
+    env = os.environ.copy()
+    env["MARIMO_MANAGE_SCRIPT_METADATA"] = "true"
+
+    process = subprocess.Popen(cmd, env=env)
+
+    def handler(sig: int, frame: Any) -> None:
+        del sig
+        del frame
+        if sys.platform == "win32":
+            os.kill(process.pid, signal.CTRL_C_EVENT)
+        else:
+            os.kill(process.pid, signal.SIGINT)
+
+    signal.signal(signal.SIGINT, handler)
+
+    return process.wait()

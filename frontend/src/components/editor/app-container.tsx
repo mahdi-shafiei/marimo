@@ -29,10 +29,12 @@ export const AppContainer: React.FC<PropsWithChildren<Props>> = ({
         <WrappedWithSidebar>
           <div
             id="App"
+            data-config-width={width}
+            data-connection-state={connectionState}
             className={cn(
               connectionState === WebSocketState.CLOSED && "disconnected",
               "bg-background w-full h-full text-textColor",
-              "flex flex-col overflow-y-auto overflow-x-hidden",
+              "flex flex-col overflow-y-auto overflow-x-auto",
               width === "full" && "config-width-full",
               "print:height-fit",
             )}

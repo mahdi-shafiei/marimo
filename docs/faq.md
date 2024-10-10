@@ -18,6 +18,7 @@
   - [How do I prevent matplotlib plots from being cut off?](#faq-mpl-cutoff)
   - [How do I display interactive matplotlib plots?](#faq-interactive-plots)
   - [How do I display objects in rows and columns?](#faq-rows-columns)
+  - [How do I show cell code in the app view?](#faq-show-code)
   - [How do I create an output with a dynamic number of UI elements?](#faq-dynamic-ui-elements)
   - [Why aren't my `on_change` handlers being called?](#faq-on-change-called)
   - [Why are my `on_change` handlers in an array all referencing the last element?](#faq-on-change-last)
@@ -191,13 +192,16 @@ kick off expensive cells before you're ready to run them.
 
 _Here are some tips to avoid accidental execution of expensive cells:_
 
-- [Disable expensive cells](guides/reactivity.md#disabling-cells).
-When a cell is disabled, it and its descendants are blocked from running.
-- Use Python's `functools.cache` to cache expensive
-intermediate computations (see our [best practices guide](guides/best_practices.md)).
+- [Disable expensive cells](guides/reactivity.md#disabling-cells). When a cell
+  is disabled, it and its descendants are blocked from running.
 - Wrap UI elements in a [form](api/inputs/form.md#marimo.ui.form).
 - Use [`mo.stop`](api/control_flow.md#marimo.stop) to conditionally stop
   execution of a cell and its descendants.
+- Decorate functions with marimo's [`mo.cache`](#marimo.cache) to cache
+  expensive intermediate computations.
+- Use [`mo.persistent_cache`](#marimo.persistent_cache) to cache variables to
+  disk; on re-run, marimo will read values from disk instead of recalculating
+  them as long as the cell is not stale.
 - Disable automatic execution in the [runtime configuration](/guides/runtime_configuration.md).
 
 <a name="faq-lazy"></a>
@@ -206,6 +210,9 @@ intermediate computations (see our [best practices guide](guides/best_practices.
 
 You can disable automatic execution through the notebook runtime settings;
 see the [guide on runtime configuration](/guides/runtime_configuration.md).
+
+When automatic execution is disabled, marimo still gives you guarantees on
+your notebook state and automatically marks cells as stale when appropriate.
 
 <a name="faq-interactivity"></a>
 
@@ -309,6 +316,12 @@ Use `marimo.hstack` and `marimo.vstack`. See the layout tutorial for details:
 ```bash
 marimo tutorial layout
 ```
+
+<a name="faq-show-code"></a>
+
+### How do I show cell code in the app view?(#faq-show-code)
+
+Use [`mo.show_code`](/api/outputs.md#marimo.show_code).
 
 <a name="faq-dynamic-ui-elements"></a>
 

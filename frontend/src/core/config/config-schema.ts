@@ -14,11 +14,16 @@ export const PackageManagerNames = [
 ] as const;
 export type PackageManagerName = (typeof PackageManagerNames)[number];
 
-export const APP_WIDTHS = ["compact", "medium", "full"] as const;
 /**
  * normal == compact, but normal is deprecated
  */
-const VALID_APP_WIDTHS = ["normal", ...APP_WIDTHS] as const;
+const VALID_APP_WIDTHS = [
+  "normal",
+  "compact",
+  "medium",
+  "full",
+  "columns",
+] as const;
 export const UserConfigSchema = z
   .object({
     completion: z
@@ -90,7 +95,6 @@ export const UserConfigSchema = z
     package_management: z
       .object({
         manager: z.enum(PackageManagerNames).default("pip"),
-        add_script_metadata: z.boolean().default(false),
       })
       .default({ manager: "pip" }),
     ai: z
@@ -107,11 +111,17 @@ export const UserConfigSchema = z
             api_key: z.string().optional(),
           })
           .optional(),
+        google: z
+          .object({
+            api_key: z.string().optional(),
+          })
+          .optional(),
       })
       .default({}),
     experimental: z
       .object({
         markdown: z.boolean().optional(),
+        multi_column: z.boolean().optional(),
         // Add new experimental features here
       })
       // Pass through so that we don't remove any extra keys that the user has added.
@@ -130,6 +140,9 @@ export const UserConfigSchema = z
     display: {},
     experimental: {},
     server: {},
+    ai: {
+      open_ai: {},
+    },
   });
 export type UserConfig = MarimoConfig;
 export type SaveConfig = UserConfig["save"];
@@ -152,8 +165,9 @@ export const AppConfigSchema = z
       }),
     app_title: AppTitleSchema.nullish(),
     css_file: z.string().nullish(),
+    auto_download: z.array(z.string()).default([]),
   })
-  .default({ width: "medium" });
+  .default({ width: "medium", auto_download: [] });
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
 export function parseAppConfig() {

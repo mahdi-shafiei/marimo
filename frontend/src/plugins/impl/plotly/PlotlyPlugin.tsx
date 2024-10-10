@@ -12,9 +12,10 @@ import { lazy, memo, useEffect, useMemo, useState } from "react";
 import useEvent from "react-use-event-hook";
 import { type PlotlyTemplateParser, createParser } from "./parse-from-template";
 import { Objects } from "@/utils/objects";
-import { isEqual, set } from "lodash-es";
+import { isEqual, pick, set } from "lodash-es";
 import { useDeepCompareMemoize } from "@/hooks/useDeepCompareMemoize";
 import { usePrevious } from "@uidotdev/usehooks";
+import { Arrays } from "@/utils/arrays";
 
 interface Data {
   figure: Figure;
@@ -26,7 +27,7 @@ type AxisDatum = unknown;
 
 type T =
   | {
-      points?: Array<Record<AxisName, AxisDatum>>;
+      points?: Array<Record<AxisName, AxisDatum>> | Plotly.PlotDatum[];
       indices?: number[];
       range?: {
         x?: number[];
@@ -84,8 +85,40 @@ function initialLayout(figure: Figure): Partial<Plotly.Layout> {
   };
 }
 
+const SUNBURST_DATA_KEYS: Array<keyof Plotly.SunburstPlotDatum> = [
+  "color",
+  "curveNumber",
+  "entry",
+  "hovertext",
+  "id",
+  "label",
+  "parent",
+  "percentEntry",
+  "percentParent",
+  "percentRoot",
+  "pointNumber",
+  "root",
+  "value",
+] as const;
+const TREE_MAP_DATA_KEYS = SUNBURST_DATA_KEYS;
+
 export const PlotlyComponent = memo(
-  ({ figure, value, setValue, config }: PlotlyPluginProps) => {
+  ({ figure: originalFigure, value, setValue, config }: PlotlyPluginProps) => {
+    const [figure, setFigure] = useState(() => {
+      // We clone the figure since Plotly mutates the figure in place
+      return structuredClone(originalFigure);
+    });
+
+    useEffect(() => {
+      const nextFigure = structuredClone(originalFigure);
+      setFigure(nextFigure);
+      setLayout({
+        ...initialLayout(nextFigure),
+        ...value,
+      });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [originalFigure]);
+
     const [layout, setLayout] = useState<Partial<Plotly.Layout>>(() => {
       return {
         ...initialLayout(figure),
@@ -94,12 +127,11 @@ export const PlotlyComponent = memo(
       };
     });
 
-    const [nonce, setNonce] = useState(0);
-
     const handleReset = useEvent(() => {
-      setLayout(initialLayout(figure));
+      const nextFigure = structuredClone(originalFigure);
+      setFigure(nextFigure);
+      setLayout(initialLayout(nextFigure));
       setValue({});
-      setNonce((prev) => prev + 1);
     });
 
     const plotlyConfig = useMemo((): Partial<Plotly.Config> => {
@@ -153,7 +185,6 @@ export const PlotlyComponent = memo(
 
     return (
       <LazyPlot
-        key={nonce}
         {...figure}
         layout={layout}
         onRelayout={(layoutUpdate) => {
@@ -177,24 +208,38 @@ export const PlotlyComponent = memo(
             setValue((prev) => ({ ...prev, ...obj }));
           }
         }}
-        onUpdate={(figure) => {
-          // If the user double-clicks, all selection will be cleared
-          // But this does not call onSelected, so we need to clear it here
-          const selections =
-            "selections" in figure.layout &&
-            Array.isArray(figure.layout.selections)
-              ? figure.layout.selections
-              : [];
-          if (selections.length === 0) {
-            setValue((prev) => ({
+        onDeselect={useEvent(() => {
+          setValue((prev) => {
+            return {
               ...prev,
-              selections: selections,
-              points: [],
-              indices: [],
+              selections: Arrays.EMPTY,
+              points: Arrays.EMPTY,
+              indices: Arrays.EMPTY,
               range: undefined,
-            }));
+            };
+          });
+        })}
+        // @ts-expect-error We patched this prop here so it doesn't exist in the types
+        onTreemapClick={useEvent((evt: Readonly<Plotly.PlotMouseEvent>) => {
+          if (!evt) {
+            return;
           }
-        }}
+
+          setValue((prev) => ({
+            ...prev,
+            points: evt.points.map((point) => pick(point, TREE_MAP_DATA_KEYS)),
+          }));
+        })}
+        onSunburstClick={useEvent((evt: Readonly<Plotly.PlotMouseEvent>) => {
+          if (!evt) {
+            return;
+          }
+
+          setValue((prev) => ({
+            ...prev,
+            points: evt.points.map((point) => pick(point, SUNBURST_DATA_KEYS)),
+          }));
+        })}
         config={plotlyConfig}
         onSelected={useEvent((evt: Readonly<Plotly.PlotSelectionEvent>) => {
           if (!evt) {

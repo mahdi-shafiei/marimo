@@ -14,12 +14,17 @@ from marimo._messaging.errors import (
     DeleteNonlocalError,
     Error,
     MarimoStrictExecutionError,
+    MarimoSyntaxError,
     MultipleDefinitionError,
 )
 from marimo._messaging.ops import CellOp
 from marimo._messaging.types import NoopStream
 from marimo._plugins.ui._core.ids import IDProvider
 from marimo._plugins.ui._core.ui_element import UIElement
+from marimo._runtime.context.kernel_context import (
+    initialize_kernel_context,
+)
+from marimo._runtime.context.types import teardown_context
 from marimo._runtime.dataflow import EdgeWithVar
 from marimo._runtime.patches import create_main_module
 from marimo._runtime.requests import (
@@ -540,6 +545,23 @@ class TestExecution:
         assert k.globals["z"] == 2
         assert not k.errors
 
+    async def test_import_module_as_local_var(
+        self, any_kernel: Kernel
+    ) -> None:
+        # Tests that imported names are mangled but still usable
+        k = any_kernel
+        await k.run(
+            [
+                ExecutionRequest(
+                    cell_id="0",
+                    code="import sys as _sys; msize = _sys.maxsize",
+                ),
+            ]
+        )
+        # _sys mangled, should not be in globals
+        assert "_sys" not in k.globals
+        assert k.globals["msize"] == sys.maxsize
+
     async def test_defs_with_no_definers_are_removed_from_cell(
         self, any_kernel: Kernel
     ) -> None:
@@ -577,6 +599,93 @@ class TestExecution:
             await k.run([er])
         assert not k.graph.cells[er.cell_id].stale
         assert k.globals["y"] == 2
+
+    async def test_cell_transitioned_to_error_is_not_stale(
+        self, lazy_kernel: Kernel
+    ) -> None:
+        k = lazy_kernel
+        await k.run(
+            [
+                ExecutionRequest(cell_id="0", code="x=0"),
+                ExecutionRequest(cell_id="1", code="x"),
+            ]
+        )
+
+        # make cell 1 stale
+        await k.run(
+            [
+                ExecutionRequest(cell_id="0", code="x=1"),
+            ]
+        )
+
+        # introduce an error to cell 1; it shouldn't be stale
+        await k.run(
+            [
+                ExecutionRequest(cell_id="1", code="x=0"),
+            ]
+        )
+        assert set(k.errors.keys()) == {"1"}
+        assert not k.graph.cells["1"].stale
+
+    async def test_cell_transitioned_to_syntax_error_is_not_stale(
+        self, lazy_kernel: Kernel
+    ) -> None:
+        k = lazy_kernel
+        await k.run(
+            [
+                ExecutionRequest(cell_id="0", code="x=0"),
+                ExecutionRequest(cell_id="1", code="x"),
+            ]
+        )
+
+        # make cell 1 stale
+        await k.run(
+            [
+                ExecutionRequest(cell_id="0", code="x=1"),
+            ]
+        )
+        cell = k.graph.cells["1"]
+        assert cell.stale
+
+        # introduce a syntax error to cell 1; it shouldn't be stale
+        await k.run(
+            [
+                ExecutionRequest(cell_id="1", code="x ^ !"),
+            ]
+        )
+        assert set(k.errors.keys()) == {"1"}
+        assert isinstance(k.errors["1"][0], MarimoSyntaxError)
+        assert not cell.stale
+
+    async def test_child_of_errored_cell_with_error_not_stale(
+        self,
+        any_kernel: Kernel,
+    ) -> None:
+        k = any_kernel
+        await k.run(
+            [
+                ExecutionRequest(cell_id="0", code="x=0"),
+            ]
+        )
+
+        # multiple definition error
+        await k.run(
+            [
+                ExecutionRequest(cell_id="1", code="y; x=1"),
+            ]
+        )
+
+        # 0 also has a multiple definition error; 1 now depends on 0, but it
+        # is errored and its error is up-to-date, so don't mark it as stale.
+        await k.run(
+            [
+                ExecutionRequest(cell_id="0", code="y = 0; x=1"),
+            ]
+        )
+
+        assert "x" not in k.globals
+        assert set(k.errors.keys()) == {"0", "1"}
+        assert not k.graph.cells["1"].stale
 
     async def test_syntax_error(self, any_kernel: Kernel) -> None:
         k = any_kernel
@@ -774,6 +883,56 @@ class TestExecution:
         )
 
         assert "pytest" in k.globals["x"]
+
+    async def test_notebook_dir(
+        self, any_kernel: Kernel, exec_req: ExecReqProvider
+    ) -> None:
+        k = any_kernel
+        await k.run(
+            [
+                exec_req.get("import marimo as mo"),
+                exec_req.get("x = mo.notebook_dir()"),
+            ]
+        )
+        assert "x" in k.globals
+        assert k.globals["x"] is None
+
+    async def test_notebook_dir_for_unnamed_notebook(
+        self, tmp_path: pathlib.Path, exec_req: ExecReqProvider
+    ) -> None:
+        try:
+            filename = str(tmp_path / "notebook.py")
+            k = Kernel(
+                stream=NoopStream(),
+                stdout=None,
+                stderr=None,
+                stdin=None,
+                cell_configs={},
+                user_config=DEFAULT_CONFIG,
+                app_metadata=AppMetadata(
+                    query_params={}, filename=filename, cli_args={}
+                ),
+                enqueue_control_request=lambda _: None,
+                module=create_main_module(None, None),
+            )
+            initialize_kernel_context(
+                kernel=k,
+                stream=k.stream,
+                stdout=k.stdout,
+                stderr=k.stderr,
+            )
+
+            await k.run(
+                [
+                    exec_req.get("import marimo as mo"),
+                    exec_req.get("x = mo.notebook_dir() / 'foo.csv'"),
+                ]
+            )
+            assert str(k.globals["x"]).endswith("foo.csv")
+        finally:
+            teardown_context()
+            if str(tmp_path) in sys.path:
+                sys.path.remove(str(tmp_path))
 
     async def test_pickle(
         self, any_kernel: Kernel, exec_req: ExecReqProvider
@@ -1031,6 +1190,14 @@ class TestExecution:
             assert k.graph.get_stale() == set([er.cell_id])
             await k.run([er])
         assert k.globals["x"] == "foo"
+
+    async def test_temporaries_deleted(
+        self, k: Kernel, exec_req: ExecReqProvider
+    ) -> None:
+        await k.run([er := exec_req.get("_x = 1")])
+        assert k.globals[f"_cell_{er.cell_id}_x"] == 1
+        await k.run([ExecutionRequest(er.cell_id, "None")])
+        assert f"_cell_{er.cell_id}_x" not in k.globals
 
 
 class TestStrictExecution:
@@ -2054,7 +2221,44 @@ class TestSQL:
         )
 
         # make sure cell 1 executed, defining df
-        assert k.globals["df"].to_dict(as_series=False) == {"a": [42]}
+        assert k.globals["t1_df"].to_dict(as_series=False) == {"a": [42]}
+
+        await k.delete_cell(DeleteCellRequest(cell_id="3"))
+        # t1 should be dropped since it's an in-memory table;
+        # cell 1 should re-run but will fail to find t1
+        assert "df" not in k.globals
+
+    async def test_sql_table_with_duckdb(self, k: Kernel) -> None:
+        await k.run(
+            [
+                ExecutionRequest(
+                    cell_id="0",
+                    code="import marimo as mo",
+                ),
+                ExecutionRequest(
+                    cell_id="1", code="df = duckdb.sql('SELECT * from t1')"
+                ),
+            ]
+        )
+        assert "df" not in k.globals
+
+        await k.run(
+            [
+                ExecutionRequest(
+                    cell_id="2",
+                    code="import polars as pl; t1_df = pl.from_dict({'a': [42]})",  # noqa: E501
+                ),
+                # cell 1 should automatically execute due to the definition of
+                # t1
+                ExecutionRequest(
+                    cell_id="3",
+                    code="duckdb.sql('CREATE OR REPLACE TABLE t1 as SELECT * FROM t1_df')",  # noqa: E501
+                ),
+            ]
+        )
+
+        # make sure cell 1 executed, defining df
+        assert k.globals["t1_df"].to_dict(as_series=False) == {"a": [42]}
 
         await k.delete_cell(DeleteCellRequest(cell_id="3"))
         # t1 should be dropped since it's an in-memory table;

@@ -18,8 +18,12 @@ class Dependency:
 
     def has(self) -> bool:
         """Return True if the dependency is installed."""
-        has_dep = importlib.util.find_spec(self.pkg) is not None
-        if not has_dep:
+        try:
+            has_dep = importlib.util.find_spec(self.pkg) is not None
+            if not has_dep:
+                return False
+        except ModuleNotFoundError:
+            # Could happen for nested imports (e.g. foo.bar)
             return False
 
         if self.min_version or self.max_version:
@@ -38,6 +42,9 @@ class Dependency:
             max_v=max_version,
         )
 
+    def imported(self) -> bool:
+        return self.pkg in sys.modules
+
     def require(self, why: str) -> None:
         """
         Raise an ModuleNotFoundError if the package is not installed.
@@ -48,8 +55,7 @@ class Dependency:
         """
         if not self.has():
             raise ModuleNotFoundError(
-                f"{self.pkg} is required {why}. "
-                + f"You can install it with 'pip install {self.pkg}'."
+                f"{self.pkg} is required {why}."
             ) from None
 
     def require_at_version(
@@ -134,6 +140,7 @@ def _version_check(
 class DependencyManager:
     """Utilities for checking the status of dependencies."""
 
+    sympy = Dependency("sympy")
     pandas = Dependency("pandas")
     polars = Dependency("polars")
     ibis = Dependency("ibis")
@@ -156,11 +163,21 @@ class DependencyManager:
     black = Dependency("black")
     geopandas = Dependency("geopandas")
     opentelemetry = Dependency("opentelemetry")
+    anthropic = Dependency("anthropic")
+    google_ai = Dependency("google.generativeai")
 
     @staticmethod
     def has(pkg: str) -> bool:
         """Return True if any lib is installed."""
         return Dependency(pkg).has()
+
+    @staticmethod
+    def imported(pkg: str) -> bool:
+        """Return True if the lib has been imported.
+
+        Can be much faster than 'has'.
+        """
+        return Dependency(pkg).imported()
 
     @staticmethod
     def which(pkg: str) -> bool:

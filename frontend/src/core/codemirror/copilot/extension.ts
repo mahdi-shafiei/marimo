@@ -75,7 +75,9 @@ export const copilotBundle = (config: CompletionConfig): Extension => {
             request.doc.position,
             state,
           );
-          Logger.debug("Copilot suggestion:", suggestion);
+          if (suggestion) {
+            Logger.debug("Copilot suggestion:", suggestion);
+          }
           return suggestion;
         },
       }),
@@ -109,7 +111,7 @@ function getCopilotRequest(
       indentSize: 1,
       insertSpaces: true,
       path: COPILOT_FILENAME,
-      version: 0,
+      version: "replace_me" as unknown as number,
       uri: `file://${COPILOT_FILENAME}`,
       relativePath: COPILOT_FILENAME,
       languageId: LANGUAGE_ID,
@@ -134,14 +136,8 @@ function getSuggestion(
   const startOffset = completionPosition.character - userPosition.character;
 
   // If startOffset is negative, we need to trim the beginning of displayText
-  const trimmedDisplayText =
-    startOffset < 0 ? displayText.slice(-startOffset) : displayText;
-
-  // If startOffset is positive, we need to prepend spaces
   const resultText =
-    startOffset > 0
-      ? " ".repeat(startOffset) + trimmedDisplayText
-      : trimmedDisplayText;
+    startOffset < 0 ? displayText.slice(-startOffset) : displayText;
 
   // If the end of the suggestion already exists next in the document, we should trim it,
   // for example closing quotes, brackets, etc.

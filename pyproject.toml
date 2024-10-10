@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "marimo"
@@ -12,8 +12,6 @@ dynamic = ["version"]
 dependencies = [
     # For maintainable cli
     "click>=8.0,<9",
-    # For python 3.8 compatibility
-    "importlib_resources>=5.10.2; python_version < \"3.9\"",
     # code completion
     "jedi>=0.18.0",
     # compile markdown to html
@@ -36,13 +34,15 @@ dependencies = [
     # websockets for use with starlette
     "websockets >= 10.0.0,<13.0.0",
     # python <=3.10 compatibility
-    "typing_extensions>=4.4.0; python_version < \"3.11\"",
+    "typing_extensions>=4.4.0; python_version < '3.11'",
     # for rst parsing; lowerbound determined by awscli requiring < 0.17,
     "docutils>=0.16.0",
     # to show RAM, CPU usage, other system utilities
     "psutil>=5.0",
     # required dependency in Starlette for SessionMiddleware support
     "itsdangerous>=2.0.0",
+    # for dataframe support
+    "narwhals>=1.0.0",
     # for cell formatting; if user version is not compatible, no-op
     # so no lower bound needed
     "ruff",
@@ -51,7 +51,7 @@ dependencies = [
 ]
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 classifiers = [
     "Operating System :: OS Independent",
     "License :: OSI Approved :: Apache Software License",
@@ -61,52 +61,37 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Intended Audience :: Education",
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3 :: Only",
 ]
 
 [project.scripts]
 marimo = "marimo._cli.cli:main"
 
+[project.urls]
+homepage = "https://github.com/marimo-team/marimo"
+
 [project.optional-dependencies]
-sql = [
-    "duckdb >= 1.0.0",
-]
+sql = ["duckdb >= 1.0.0"]
 
 dev = [
     "click <8.1.4",  # https://github.com/pallets/click/issues/2558
     "black~=23.12.1",
-    "build~=0.10.0",
-    "types-Pygments~=2.18.0.20240506",
-    "types-psutil~=5.9.5.20240516",
-    # For server testing
-    "httpx~=0.27.0",
-    # For SQL
-    "duckdb~=1.0.0",
-    # For testing mo.ui.chart, dataframes, tables
-    "pandas>=1.5.3",
-    "pandas-stubs>=1.5.3.230321",
-    "pyarrow>=15.0.2,<18",
-    "pyarrow-stubs>=17.0",
     # For tracing debugging
     "opentelemetry-api~=1.26.0",
     "opentelemetry-sdk~=1.26.0",
-    # For testing mo.image
-    "pillow~=10.4.0",
-    "types-Pillow~=10.2.0.20240520",
-    "polars~=1.5.0",
-    "pytest~=8.3.2",
-    "pytest-codecov~=0.5.1",
-    "pytest-asyncio~=0.23.8",
-    "types-Markdown~=3.6.0.20240316",
-    "types-PyYAML~=6.0.12.20240808",
-    "mypy~=1.10.1",
+    # For SQL
+    "duckdb>=1.0.0",
+    # For linting
     "ruff~=0.6.1",
-    "typos~=1.23.6",
-    # For docs
+    # For AI
+    "openai~=1.41.1",
+]
+
+docs = [
     "pypandoc~=1.13",
     "autoclasstoc~=1.6.0",
     # furo raises an error during docs build when sphinx is upgraded
@@ -115,54 +100,131 @@ dev = [
     "sphinx-new-tab-link~=0.5.3",
     "sphinx-sitemap~=2.6.0",
     "sphinx-design~=0.5.0",
+    "sphinx-autobuild~=2024.10.3",
     "myst_parser~=3.0.1",
     "furo==2024.8.6"
 ]
 
-testcore = [
-    "click <8.1.4",  # https://github.com/pallets/click/issues/2558,
-    # for server testing
+[tool.hatch]
+installer = "uv"
+
+[tool.hatch.version]
+path = "marimo/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["/marimo"]
+artifacts = ["marimo/_static/", "marimo/_lsp/"]
+exclude = ["marimo/_smoke_tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["marimo"]
+artifacts = ["marimo/_static/", "marimo/_lsp/"]
+exclude = ["marimo/_smoke_tests"]
+
+# Override the default uv version to use the latest version
+[tool.hatch.envs.hatch-uv]
+dependencies = ["uv>=0.4.17"]
+
+[tool.hatch.envs.default]
+features = ["dev"]
+python = "3.12"
+installer = "uv"
+dependencies = [
+    "uv>=0.4.17", # so we can bump the version used by hatch
+    # Typo checking
+    "typos~=1.23.6",
+]
+
+[tool.hatch.envs.default.scripts]
+lint = "ruff check --fix"
+format = "ruff format"
+
+[tool.hatch.envs.typecheck]
+python = "3.12"
+installer = "uv"
+dependencies = [
+    "mypy~=1.10.1",
+    # Types for mypy
+    "polars~=1.9.0",
+    "pyarrow-stubs>=17.0",
+    "pandas-stubs>=1.5.3.230321",
+    "types-Pillow~=10.2.0.20240520",
+    "types-Pygments~=2.18.0.20240506",
+    "types-psutil~=5.9.5.20240516",
+    "types-Markdown~=3.6.0.20240316",
+    "types-PyYAML~=6.0.12.20240808",
+]
+
+[tool.hatch.envs.typecheck.scripts]
+check = "mypy marimo/"
+
+[tool.hatch.envs.test]
+extra-dependencies = [
     "hypothesis~=6.102.1",
+    # For server testing
     "httpx~=0.27.0",
     "pytest~=8.3.2",
     "pytest-codecov~=0.5.1",
     "pytest-asyncio~=0.23.8",
 ]
 
-testoptional = [
+[[tool.hatch.envs.test.matrix]]
+python = ["3.9","3.10", "3.11", "3.12"]
+
+[tool.hatch.envs.test.scripts]
+test = "pytest{env:HATCH_TEST_ARGS:} {args:tests}"
+default = "pytest{env:HATCH_TEST_ARGS:} {args:tests}"
+
+[tool.hatch.envs.test-optional]
+template = "test"
+extra-dependencies = [
+    "hypothesis~=6.102.1",
+    "httpx~=0.27.0",
+    "pytest~=8.3.2",
+    "pytest-codecov~=0.5.1",
+    "pytest-asyncio~=0.23.8",
     # For testing mo.ui.chart, table, ...
+    "matplotlib",
+    "vl-convert-python",
+    "pyarrow",
+    "pyarrow_hotfix",
     "altair>=5.4.0",
+    "polars~=1.9.0",
     "pandas>=1.5.3",
-    "pandas-stubs>=1.5.3.230321",
-    "geopandas~=0.14.4; python_version > \"3.8\"",
-    "matplotlib~=3.9.2; python_version > \"3.8\"",
-    "pyarrow>=15.0.2,<18",
-    "pyarrow-stubs>=17.0",
-    "pyarrow-hotfix",
+    "geopandas~=0.14.4; python_version > '3.9'",
+    # FOr testing sql
+    "ibis-framework[duckdb]~=9.5.0; python_version > '3.9'",
+    # For testing mo.image
     "pillow~=10.4.0",
-    "types-Pillow~=10.2.0.20240520",
-    "polars~=1.5.0",
     "anywidget~=0.9.13",
     "ipython~=8.12.3",
+    # testing gen ai
     "openai~=1.41.1",
-    "ibis-framework[duckdb]~=9.3.0; python_version > \"3.9\"",
     "anthropic==0.34.1",
+    "google-generativeai==0.8.2",
     # exporting as ipynb
     "nbformat >=5.10.4",
+    "sympy>=1.13.2",
+    # For standard scientific computing/ ML
+    "jax>=0.4.0; python_version == '3.12'",
+    "torch>=2.4.0; python_version == '3.12'",
+    "scikit-bio>=0.6.0; python_version == '3.12'",
 ]
 
-[project.urls]
-homepage = "https://github.com/marimo-team/marimo"
+[[tool.hatch.envs.test-optional.matrix]]
+python = ["3.9","3.10", "3.11", "3.12"]
 
-[tool.setuptools.dynamic]
-version = { attr = "marimo.__version__" }
+[tool.hatch.envs.docs]
+features = ["docs"]
 
-[tool.setuptools.packages.find]
-# project source is entirely contained in the `marimo` package
-include = ["marimo*"]
+[tool.hatch.envs.docs.scripts]
+build = "sphinx-build {args:docs/ docs/_build}"
+autobuild = "sphinx-autobuild {args:docs/ docs/_build}"
+clean = "cd docs && make clean"
 
 [tool.ruff]
 line-length=79
+include = ["marimo/**/*.py", "tests/**/*.py"]
 exclude = [
     "examples",
     "scripts",
@@ -175,6 +237,7 @@ exclude = [
     "tests/_ast/app_data",
     "tests/_ast/codegen_data",
     "tests/_ast/cell_data",
+    "tests/_cli/cli_data",
     "tests/_cli/ipynb_data",
     "tests/_runtime/runtime_data",
     "tests/_ast/test_app.py",
@@ -212,8 +275,6 @@ extend-select = [
     "ANN202", # missing-return-type-private-function
     "ANN205", # missing-return-type-static-method
     "ANN206", # missing-return-type-class-method
-    # future annotations
-    "FA102",
     # isort
     "I001",
     # Enable entire ruff rule section
@@ -251,6 +312,7 @@ unfixable = ["F401"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/{tests}/*" = ["ANN201", "ANN202"]
+"dagger/*" = ["TID252"]
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
@@ -267,7 +329,7 @@ docstring-code-format = true
 ban-relative-imports = "all"
 # Ban certain modules from being imported at module level, instead requiring
 # that they're imported lazily (e.g., within a function definition).
-banned-module-level-imports = ["numpy", "pandas", "tomlkit", "polars"]
+banned-module-level-imports = ["numpy", "pandas", "tomlkit", "polars", "altair", "ipython", "anywidget"]
 
 [tool.ruff.lint.flake8-pytest-style]
 mark-parentheses = false
@@ -280,6 +342,7 @@ exclude = [
     'tests/_ast/app_data',
     'tests/_ast/codegen_data',
     'tests/_ast/cell_data',
+    'tests/_cli/cli_data',
     'tests/_cli/ipynb_data',
     'tests/_runtime/runtime_data',
     'marimo/_tutorials/',
@@ -305,10 +368,14 @@ asyncio_mode = "auto"
 [tool.coverage.run]
 omit = ["marimo/_tutorials/*"]
 
+[tool.typos.default]
+extend-ignore-re = ["[0-9a-zA-Z]{43}"]
+
 [tool.typos.default.extend-words]
 wheres = "wheres"
 Ue = "Ue" # Used in one of the cell IDs
 Nd = "Nd" # Confused with And
+pn = "pn" # Panel
 
 [tool.typos.files]
 extend-exclude = [

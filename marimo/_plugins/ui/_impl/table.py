@@ -4,7 +4,6 @@ from __future__ import annotations
 import functools
 from dataclasses import dataclass
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -15,6 +14,8 @@ from typing import (
     Sequence,
     Union,
 )
+
+from narwhals.typing import IntoDataFrame
 
 import marimo._output.data.data as mo_data
 from marimo import _loggers
@@ -42,12 +43,6 @@ from marimo._runtime.functions import EmptyArgs, Function
 LOGGER = _loggers.marimo_logger()
 
 
-if TYPE_CHECKING:
-    import pandas as pd
-    import polars as pl
-    import pyarrow as pa  # ignore
-
-
 @dataclass
 class DownloadAsArgs:
     format: Literal["csv", "json"]
@@ -71,6 +66,8 @@ class ColumnSummary:
 class ColumnSummaries:
     data: Union[JSONType, str]
     summaries: List[ColumnSummary]
+    # Disabled because of too many columns/rows
+    # This will show a banner in the frontend
     is_disabled: Optional[bool] = None
 
 
@@ -81,6 +78,7 @@ class SearchTableArgs:
     query: Optional[str] = None
     sort: Optional[SortArgs] = None
     filters: Optional[List[Condition]] = None
+    limit: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -96,9 +94,7 @@ class SortArgs:
 
 
 @mddoc
-class table(
-    UIElement[List[str], Union[List[JSONType], "pd.DataFrame", "pl.DataFrame"]]
-):
+class table(UIElement[List[str], Union[List[JSONType], IntoDataFrame]]):
     """
     A table component with selectable rows. Get the selected rows with
     `table.value`.
@@ -108,7 +104,9 @@ class table(
     1. a list of dicts, with one dict for each row, keyed by column names;
     2. a list of values, representing a table with a single column;
     3. a Pandas dataframe; or
-    4. a Polars dataframe.
+    4. a Polars dataframe; or
+    5. an Ibis dataframe; or
+    6. a PyArrow table.
 
     **Examples.**
 
@@ -198,7 +196,7 @@ class table(
     or functions
     - `freeze_columns_left`: list of column names to freeze on the left
     - `freeze_columns_right`: list of column names to freeze on the right
-    - `label`: text label for the element
+    - `label`: markdown label for the element
     - `on_change`: optional callback to run when this element's value changes
     """
 
@@ -210,9 +208,7 @@ class table(
             ListOrTuple[Union[str, int, float, bool, MIME, None]],
             ListOrTuple[Dict[str, JSONType]],
             Dict[str, ListOrTuple[JSONType]],
-            "pd.DataFrame",
-            "pl.DataFrame",
-            "pa.Table",
+            "IntoDataFrame",
         ],
         pagination: Optional[bool] = None,
         selection: Optional[Literal["single", "multi"]] = "multi",
@@ -231,9 +227,7 @@ class table(
                     Union[
                         List[JSONType],
                         Dict[str, ListOrTuple[JSONType]],
-                        "pd.DataFrame",
-                        "pl.DataFrame",
-                        "pa.Table",
+                        "IntoDataFrame",
                     ]
                 ],
                 None,
@@ -249,6 +243,7 @@ class table(
         self._data = data
         # Holds the original data
         self._manager = get_table_manager(data)
+        self._show_column_summaries = show_column_summaries
 
         if (
             total_cols := self._manager.get_num_columns()
@@ -289,13 +284,17 @@ class table(
         if _internal_total_rows is not None:
             total_rows = _internal_total_rows
         else:
-            total_rows = self._manager.get_num_rows(force=True) or "too_many"
+            num_rows = self._manager.get_num_rows(force=True)
+            total_rows = num_rows if num_rows is not None else "too_many"
 
         if pagination is False and total_rows != "too_many":
             page_size = total_rows
         # pagination defaults to True if there are more than 10 rows
         if pagination is None:
-            pagination = total_rows == "too_many" or total_rows > 10
+            if total_rows == "too_many":
+                pagination = True
+            elif total_rows > 10:
+                pagination = True
 
         # Search first page
         search_result = self.search(
@@ -382,7 +381,7 @@ class table(
 
     def _convert_value(
         self, value: list[str]
-    ) -> Union[List[JSONType], "pd.DataFrame", "pl.DataFrame"]:
+    ) -> Union[List[JSONType], "IntoDataFrame"]:
         indices = [int(v) for v in value]
         self._selected_manager = self._searched_manager.select_rows(indices)
         self._has_any_selection = len(indices) > 0
@@ -408,6 +407,14 @@ class table(
 
     def get_column_summaries(self, args: EmptyArgs) -> ColumnSummaries:
         del args
+        if not self._show_column_summaries:
+            return ColumnSummaries(
+                data=None,
+                summaries=[],
+                # This is not 'disabled' because of too many rows
+                # so we don't want to display the banner
+                is_disabled=False,
+            )
 
         total_rows = self._searched_manager.get_num_rows(force=True) or 0
 
@@ -442,6 +449,8 @@ class table(
             return ColumnSummaries(
                 data=None,
                 summaries=summaries,
+                # We are still showing summaries,
+                # so we don't want to display the banner
                 is_disabled=False,
             )
 

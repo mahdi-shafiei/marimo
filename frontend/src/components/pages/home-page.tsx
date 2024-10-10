@@ -70,6 +70,7 @@ import {
   expandedFoldersAtom,
   includeMarkdownAtom,
   RunningNotebooksContext,
+  WorkspaceRootContext,
 } from "../home/state";
 import { Maps } from "@/utils/maps";
 import { Input } from "../ui/input";
@@ -82,6 +83,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Objects } from "@/utils/objects";
 import { CaretDownIcon } from "@radix-ui/react-icons";
+import { ErrorBoundary } from "../editor/boundary/ErrorBoundary";
+import { Banner } from "@/plugins/impl/common/error-banner";
+import { prettyError } from "@/utils/errors";
 
 function tabTarget(path: string) {
   // Consistent tab target so we open in the same tab when clicking on the same notebook
@@ -89,15 +93,9 @@ function tabTarget(path: string) {
 }
 
 const HomePage: React.FC = () => {
-  const [includeMarkdown, setIncludeMarkdown] = useAtom(includeMarkdownAtom);
-  const [searchText, setSearchText] = useState("");
   const [nonce, setNonce] = useState(0);
 
   const recentsResponse = useAsyncData(() => getRecentFiles(), []);
-  const workspaceResponse = useAsyncData(
-    () => getWorkspaceFiles({ includeMarkdown }),
-    [includeMarkdown],
-  );
 
   useInterval(
     () => {
@@ -112,11 +110,7 @@ const HomePage: React.FC = () => {
     return Maps.keyBy(response.files, (file) => file.path);
   }, [nonce]);
 
-  const response = combineAsyncData(
-    recentsResponse,
-    workspaceResponse,
-    runningResponse,
-  );
+  const response = combineAsyncData(recentsResponse, runningResponse);
 
   if (response.error) {
     throw response.error;
@@ -127,14 +121,13 @@ const HomePage: React.FC = () => {
     return <Spinner centered={true} size="xlarge" />;
   }
 
-  const [recents, workspace, running] = data;
+  const [recents, running] = data;
 
   return (
     <Suspense>
       <RunningNotebooksContext.Provider
         value={{
           runningNotebooks: running,
-          root: workspace.root,
           setRunningNotebooks: runningResponse.setData,
         }}
       >
@@ -151,56 +144,82 @@ const HomePage: React.FC = () => {
           <NotebookList
             header={<Header Icon={PlayCircleIcon}>Running notebooks</Header>}
             files={[...running.values()]}
-            openNewTab={false}
           />
           <NotebookList
             header={<Header Icon={ClockIcon}>Recent notebooks</Header>}
             files={recents.files}
-            openNewTab={true}
           />
-          <div className="flex flex-col gap-2">
-            <Header
-              Icon={BookTextIcon}
-              control={
-                <div className="flex items-center gap-2">
-                  <Input
-                    id="search"
-                    value={searchText}
-                    icon={<SearchIcon size={13} />}
-                    onChange={(e) => setSearchText(e.target.value)}
-                    placeholder="Search"
-                    className="mb-0 border-border"
-                  />
-                  <CollapseAllButton />
-                  <Checkbox
-                    data-testid="include-markdown-checkbox"
-                    id="include-markdown"
-                    checked={includeMarkdown}
-                    onCheckedChange={(checked) =>
-                      setIncludeMarkdown(Boolean(checked))
-                    }
-                  />
-                  <Label htmlFor="include-markdown">Include markdown</Label>
-                </div>
-              }
-            >
-              Workspace
-              <RefreshCcwIcon
-                className="w-4 h-4 ml-1 cursor-pointer opacity-70 hover:opacity-100"
-                onClick={() => workspaceResponse.reload()}
-              />
-              {workspaceResponse.loading && <Spinner size="small" />}
-            </Header>
-            <div className="flex flex-col divide-y divide-[var(--slate-3)] border rounded overflow-hidden max-h-[48rem] overflow-y-auto shadow-sm bg-background">
-              <NotebookFileTree
-                searchText={searchText}
-                files={workspace.files}
-              />
-            </div>
-          </div>
+          <ErrorBoundary>
+            <WorkspaceNotebooks />
+          </ErrorBoundary>
         </div>
       </RunningNotebooksContext.Provider>
     </Suspense>
+  );
+};
+
+const WorkspaceNotebooks: React.FC = () => {
+  const [includeMarkdown, setIncludeMarkdown] = useAtom(includeMarkdownAtom);
+  const [searchText, setSearchText] = useState("");
+  const workspaceResponse = useAsyncData(
+    () => getWorkspaceFiles({ includeMarkdown }),
+    [includeMarkdown],
+  );
+
+  if (workspaceResponse.error) {
+    return (
+      <Banner kind="danger" className="rounded p-4">
+        {prettyError(workspaceResponse.error)}
+      </Banner>
+    );
+  }
+
+  if (workspaceResponse.loading || !workspaceResponse.data) {
+    return <Spinner centered={true} size="xlarge" className="mt-6" />;
+  }
+
+  const workspace = workspaceResponse.data;
+
+  return (
+    <WorkspaceRootContext.Provider value={workspace.root}>
+      <div className="flex flex-col gap-2">
+        <Header
+          Icon={BookTextIcon}
+          control={
+            <div className="flex items-center gap-2">
+              <Input
+                id="search"
+                value={searchText}
+                icon={<SearchIcon size={13} />}
+                onChange={(e) => setSearchText(e.target.value)}
+                placeholder="Search"
+                className="mb-0 border-border"
+              />
+              <CollapseAllButton />
+              <Checkbox
+                data-testid="include-markdown-checkbox"
+                id="include-markdown"
+                checked={includeMarkdown}
+                onCheckedChange={(checked) =>
+                  setIncludeMarkdown(Boolean(checked))
+                }
+              />
+              <Label htmlFor="include-markdown">Include markdown</Label>
+            </div>
+          }
+        >
+          Workspace
+          <RefreshCcwIcon
+            className="w-4 h-4 ml-1 cursor-pointer opacity-70 hover:opacity-100"
+            onClick={() => workspaceResponse.reload()}
+          />
+          {workspaceResponse.loading && <Spinner size="small" />}
+        </Header>
+        <div className="flex flex-col divide-y divide-[var(--slate-3)] border rounded overflow-hidden max-h-[48rem] overflow-y-auto shadow-sm bg-background">
+          <NotebookFileTree searchText={searchText} files={workspace.files} />
+        </div>
+      </div>
+    </WorkspaceRootContext.Provider>
   );
 };
 
@@ -285,7 +304,7 @@ const Node = ({ node, style }: NodeRendererProps<FileInfo>) => {
 
   const Icon = FILE_TYPE_ICONS[fileType];
   const iconEl = <Icon className="w-5 h-5 flex-shrink-0" strokeWidth={1.5} />;
-  const root = useContext(RunningNotebooksContext).root;
+  const root = useContext(WorkspaceRootContext);
 
   const renderItem = () => {
     const itemClassName =
@@ -360,8 +379,7 @@ const FolderArrow = ({ node }: { node: NodeApi<FileInfo> }) => {
 const NotebookList: React.FC<{
   header: React.ReactNode;
   files: MarimoFile[];
-  openNewTab: boolean;
-}> = ({ header, files, openNewTab }) => {
+}> = ({ header, files }) => {
   if (files.length === 0) {
     return null;
   }
@@ -371,13 +389,7 @@ const NotebookList: React.FC<{
       {header}
       <div className="flex flex-col divide-y divide-[var(--slate-3)] border rounded overflow-hidden max-h-[48rem] overflow-y-auto shadow-sm bg-background">
         {files.map((file) => {
-          return (
-            <MarimoFileComponent
-              key={file.path}
-              file={file}
-              openNewTab={openNewTab}
-            />
-          );
+          return <MarimoFileComponent key={file.path} file={file} />;
         })}
       </div>
     </div>
@@ -402,10 +414,8 @@ const Header: React.FC<{
 
 const MarimoFileComponent = ({
   file,
-  openNewTab,
 }: {
   file: MarimoFile;
-  openNewTab: boolean;
 }) => {
   // If path is a sessionId, then it has not been saved yet
   // We want to keep the sessionId in this case
@@ -421,7 +431,7 @@ const MarimoFileComponent = ({
       className="py-1.5 px-4 hover:bg-[var(--blue-2)] hover:text-primary transition-all duration-300 cursor-pointer group relative flex gap-4 items-center"
       key={file.path}
       href={href.toString()}
-      target={openNewTab ? tabTarget(file.initializationId || file.path) : ""}
+      target={tabTarget(file.initializationId || file.path)}
     >
       <div className="flex flex-col justify-between flex-1">
         <span className="flex items-center gap-2">
@@ -444,12 +454,10 @@ const MarimoFileComponent = ({
           <div>
             <SessionShutdownButton filePath={file.path} />
           </div>
-          {openNewTab && (
-            <ExternalLinkIcon
-              size={20}
-              className="group-hover:opacity-100 opacity-0 transition-all duration-300 text-primary"
-            />
-          )}
+          <ExternalLinkIcon
+            size={20}
+            className="group-hover:opacity-100 opacity-0 transition-all duration-300 text-primary"
+          />
         </div>
         {!!file.lastModified && (
           <div className="text-xs text-muted-foreground opacity-80">

@@ -10,6 +10,7 @@ import {
   type LastSavedNotebook,
   staleCellIds,
 } from "./cells";
+import { LanguageAdapters } from "../codemirror/language/LanguageAdapters";
 
 export function notebookIsRunning(state: NotebookState) {
   return Object.values(state.cellRuntime).some(
@@ -85,7 +86,8 @@ export function canUndoDeletes(state: NotebookState) {
  * Get the status of the descendants of the given cell.
  */
 export function getDescendantsStatus(state: NotebookState, cellId: CellId) {
-  const descendants = state.cellIds.getDescendants(cellId);
+  const column = state.cellIds.findWithId(cellId);
+  const descendants = column.getDescendants(cellId);
   const stale = descendants.some(
     (id) => state.cellRuntime[id]?.staleInputs || state.cellData[id]?.edited,
   );
@@ -101,4 +103,10 @@ export function getDescendantsStatus(state: NotebookState, cellId: CellId) {
     errored,
     runningOrQueued,
   };
+}
+
+export function isMarkdown(code: string | undefined) {
+  return code && code !== ""
+    ? LanguageAdapters.markdown().isSupported(code)
+    : false;
 }

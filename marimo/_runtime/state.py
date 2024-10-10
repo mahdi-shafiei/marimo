@@ -2,21 +2,146 @@
 from __future__ import annotations
 
 import types
-from typing import Callable, Generic, TypeVar
+import weakref
+from dataclasses import dataclass
+from typing import Any, Callable, Generic, Optional, TypeVar
+from uuid import uuid4
 
 from marimo._output.rich_help import mddoc
 from marimo._runtime.context import ContextNotInitializedError, get_context
 
 T = TypeVar("T")
+Id = int
+
+
+@dataclass
+class StateItem(Generic[T]):
+    id: Id
+    ref: weakref.ref[State[T]]
+
+
+def extract_name(key: str) -> str:
+    # Some variables may use a state internally, as such the lookup needs a
+    # context qualifier. We delimit the context and name with a colon, which is
+    # not a valid python variable name character.
+    return key.split(":")[-1]
+
+
+class StateRegistry:
+    def __init__(self) -> None:
+        # variable name -> state
+        # State registry is pruned based on the variable definitions in scope.
+        self._states: dict[str, StateItem[Any]] = {}
+        # id -> variable name for state
+        # NB. python reuses IDs, but an active pruning of the registry should
+        # help protect against this.
+        self._inv_states: dict[Id, set[str]] = {}
+
+    def register(
+        self,
+        state: State[T],
+        name: Optional[str] = None,
+        context: Optional[str] = None,
+    ) -> None:
+        if name is None:
+            name = str(uuid4())
+        if context is not None:
+            name = f"{context}:{name}"
+
+        if id(state) in self._inv_states:
+            ref = next(iter(self._inv_states[id(state)]))
+            # Check for duplicate state ids and clean up accordingly
+            if ref not in self._states or id(self._states[ref].ref()) != id(
+                state
+            ):
+                for ref in self._inv_states[id(state)]:
+                    self._states.pop(ref, None)
+                self._inv_states[id(state)].clear()
+        state_item = StateItem(id(state), weakref.ref(state))
+        self._states[name] = state_item
+        id_to_ref = self._inv_states.get(id(state), set())
+        id_to_ref.add(name)
+        self._inv_states[id(state)] = id_to_ref
+        finalizer = weakref.finalize(state, self._delete, name, state_item)
+        # No need to clean up the registry at program teardown
+        finalizer.atexit = False
+
+    def register_scope(
+        self, glbls: dict[str, Any], defs: Optional[set[str]] = None
+    ) -> None:
+        """Finds instances of state and scope, and adds them to registry if not
+        already present."""
+        if defs is None:
+            defs = set(glbls.keys())
+        for variable in defs:
+            lookup = glbls.get(variable, None)
+            if isinstance(lookup, State):
+                self.register(lookup, variable)
+
+    def _delete(self, name: str, state_item: StateItem[T]) -> None:
+        self._states.pop(name, None)
+        self._inv_states.pop(state_item.id, None)
+
+    def retain_active_states(self, active_variables: set[str]) -> None:
+        """Retains only the active states in the registry."""
+        # Remove all non-active states by name
+        active_state_ids = set()
+        for state_key in list(self._states.keys()):
+            if extract_name(state_key) not in active_variables:
+                id_key = id(self._states[state_key])
+                lookup = self._inv_states.get(id_key, None)
+                if lookup is not None:
+                    if state_key in lookup:
+                        lookup.remove(state_key)
+                    if not lookup:
+                        del self._inv_states[id_key]
+                del self._states[state_key]
+            else:
+                active_state_ids.add(id(self._states[state_key]))
+
+        # Remove all non-active states by id
+        for state_id in list(self._inv_states.keys()):
+            if state_id not in active_state_ids:
+                del self._inv_states[state_id]
+
+    def lookup(
+        self, name: str, context: Optional[str] = None
+    ) -> Optional[State[T]]:
+        if context is not None:
+            name = f"{context}:{name}"
+        if name in self._states:
+            return self._states[name].ref()
+        return None
+
+    def bound_names(self, state: State[T]) -> set[str]:
+        if id(state) in self._inv_states:
+            return self._inv_states[id(state)]
+        return set()
 
 
 class State(Generic[T]):
     """Mutable reactive state"""
 
-    def __init__(self, value: T, allow_self_loops: bool = False) -> None:
+    def __init__(
+        self,
+        value: T,
+        allow_self_loops: bool = False,
+        _registry: Optional[StateRegistry] = None,
+        _name: Optional[str] = None,
+        _context: Optional[str] = None,
+    ) -> None:
         self._value = value
         self.allow_self_loops = allow_self_loops
         self._set_value = SetFunctor(self)
+
+        try:
+            if _registry is None:
+                _registry = get_context().state_registry
+            _registry.register(self, _name, _context)
+        except ContextNotInitializedError:
+            # Registration may be picked up later, but there is nothing to do
+            # at this point.
+            pass
 
     def __call__(self) -> T:
         return self._value

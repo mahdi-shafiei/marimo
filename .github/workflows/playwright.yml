@@ -3,13 +3,7 @@ name: playwright
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - README.md
   pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - README.md
 
 env:
   TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -17,7 +11,25 @@ env:
   MARIMO_SKIP_UPDATE_CHECK: 1
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      playwright: ${{ steps.filter.outputs.playwright }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            playwright:
+              - '**'
+              - '!docs/**'
+              - '!examples/**'
+              - '!README.md'
+
   test:
+    needs: changes
+    if: ${{ needs.changes.outputs.playwright == 'true' }}
     timeout-minutes: 16
     runs-on: ubuntu-latest
     defaults:
@@ -41,7 +53,7 @@ jobs:
 
       - uses: pnpm/action-setup@v2
         with:
-          version: 8
+          version: 9
 
       - name: ⎔ Setup Node.js
         uses: actions/setup-node@v4
@@ -50,15 +62,13 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - uses: turbocache-build/turbocache-action@v1
-
       - name: 📦 Build frontend
         run: make fe
 
-      - name: 🐍 Setup Python 3.10
+      - name: 🐍 Setup Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
           cache: 'pip'
 
       # We tried to add uv, but marimo is unable to
@@ -93,11 +103,11 @@ jobs:
       - name: 📥 Install Playwright Browsers
         working-directory: ./frontend
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install chromium webkit --with-deps
+        run: pnpm playwright install chromium webkit --with-deps
 
       - name: 🎭 Run Playwright tests
         working-directory: ./frontend
-        run: npx playwright test
+        run: pnpm playwright test
         # TODO(msconick) remove continue-on-error when all tests pass
         continue-on-error: true
         env:

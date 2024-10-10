@@ -31,14 +31,14 @@ def test_query_includes_limit():
     )
 
 
-@patch("marimo._sql.sql.output.replace")
+@patch("marimo._sql.sql.replace")
 @pytest.mark.skipif(not HAS_DEPS, reason="polars and duckdb is required")
 def test_applies_limit(mock_replace: MagicMock) -> None:
     import duckdb
 
     try:
         os.environ["MARIMO_SQL_DEFAULT_LIMIT"] = "300"
-        duckdb.sql("CREATE TABLE t AS SELECT * FROM range(1000)")
+        duckdb.sql("CREATE OR REPLACE TABLE t AS SELECT * FROM range(1000)")
         mock_replace.assert_not_called()
 
         table: ui.table
@@ -74,7 +74,9 @@ def test_applies_limit(mock_replace: MagicMock) -> None:
 
         # Limit above 20_0000 (which is the mo.ui.table cutoff)
         mock_replace.reset_mock()
-        duckdb.sql("CREATE TABLE big_table AS SELECT * FROM range(30_000)")
+        duckdb.sql(
+            "CREATE OR REPLACE TABLE big_table AS SELECT * FROM range(30_000)"
+        )
         assert len(sql("SELECT * FROM big_table LIMIT 25_000")) == 25_000
         mock_replace.assert_called_once()
         table = mock_replace.call_args[0][0]
@@ -86,7 +88,44 @@ def test_applies_limit(mock_replace: MagicMock) -> None:
         del os.environ["MARIMO_SQL_DEFAULT_LIMIT"]
 
 
-@pytest.mark.skipif(HAS_DEPS, reason="must be missing deps")
+@pytest.mark.skipif(
+    DependencyManager.duckdb.has(), reason="must be missing duckdb"
+)
 def test_sql_raises_error_without_duckdb():
     with pytest.raises(ModuleNotFoundError):
         sql("SELECT * FROM t")
+
+
+@patch("marimo._sql.sql.replace")
+@pytest.mark.skipif(not HAS_DEPS, reason="polars and duckdb is required")
+def test_sql_output_flag(mock_replace: MagicMock) -> None:
+    import duckdb
+    import polars as pl
+
+    from marimo._sql.sql import sql
+
+    # Create a test table
+    duckdb.sql(
+        "CREATE OR REPLACE TABLE test_table_2 AS SELECT * FROM range(10)"
+    )
+
+    # Test when output is None (default, True)
+    result = sql("SELECT * FROM test_table_2")
+    assert isinstance(result, pl.DataFrame)
+    mock_replace.assert_called_once()
+    mock_replace.reset_mock()
+
+    # Test when output is False
+    result = sql("SELECT * FROM test_table_2", output=False)
+    assert isinstance(result, pl.DataFrame)
+    mock_replace.assert_not_called()
+    mock_replace.reset_mock()
+
+    # Test when output is True
+    result = sql("SELECT * FROM test_table_2", output=True)
+    assert isinstance(result, pl.DataFrame)
+    mock_replace.assert_called_once()
+    mock_replace.reset_mock()
+
+    # Clean up
+    duckdb.sql("DROP TABLE test_table_2")

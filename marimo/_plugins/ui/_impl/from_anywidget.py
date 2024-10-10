@@ -1,7 +1,6 @@
 # Copyright 2024 Marimo. All rights reserved.
 from __future__ import annotations
 
-import json
 import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -94,6 +93,7 @@ class anywidget(UIElement[T, T]):
             "_esm",
             "_css",
             "_anywidget_id",
+            "_msg_callbacks",
             "_dom_classes",
             "_model_module",
             "_model_module_version",
@@ -113,18 +113,26 @@ class anywidget(UIElement[T, T]):
         for k, v in args.items():
             try:
                 # Try to see if it is json-serializable
-                json.dumps(v, cls=WebComponentEncoder)
+                WebComponentEncoder.json_dumps(v)
                 # Just add the plain value, it will be json-serialized later
                 json_args[k] = v
             except TypeError:
                 pass
-
-        def on_change(change: T) -> None:
-            for key, value in change.items():
-                widget.set_trait(key, value)
+            except ValueError:
+                # Handle circular dependencies
+                pass
 
         js: str = widget._esm if hasattr(widget, "_esm") else ""  # type: ignore [unused-ignore]  # noqa: E501
         css: str = widget._css if hasattr(widget, "_css") else ""  # type: ignore [unused-ignore]  # noqa: E501
+        import ipywidgets  # type: ignore
+
+        _remove_buffers = ipywidgets.widgets.widget._remove_buffers  # type: ignore
+        _state, buffer_paths, buffers = _remove_buffers(widget.get_state())  # type: ignore
+
+        def on_change(change: T) -> None:
+            _put_buffers = ipywidgets.widgets.widget._put_buffers  # type: ignore
+            _put_buffers(change, buffer_paths, buffers)
+            widget.set_state(change)
 
         super().__init__(
             component_name="marimo-anywidget",
@@ -133,6 +141,7 @@ class anywidget(UIElement[T, T]):
             args={
                 "js-url": mo_data.js(js).url if js else "",  # type: ignore [unused-ignore]  # noqa: E501
                 "css": css,
+                "buffer-paths": buffer_paths,
             },
             on_change=on_change,
             functions=(

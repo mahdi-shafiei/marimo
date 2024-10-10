@@ -8,6 +8,7 @@ from marimo._ast.app import _AppConfig
 from marimo._ast.cell import CellConfig
 from marimo._config.config import DEFAULT_CONFIG
 from marimo._messaging.cell_output import CellChannel, CellOutput
+from marimo._server.export.exporter import hash_code
 from marimo._server.model import SessionMode
 from marimo._server.templates import templates
 from marimo._server.tokens import SkewProtectionToken
@@ -148,6 +149,7 @@ class TestStaticNotebookTemplate(unittest.TestCase):
         self.server_token = SkewProtectionToken("token")
         self.app_config = _AppConfig()
         self.filename = "notebook.py"
+        self.filepath = "path/to/notebook.py"
         self.code = "print('Hello, World!')"
         self.cell_ids = ["cell1", "cell2"]
         self.cell_names = ["Cell 1", "Cell 2"]
@@ -186,8 +188,9 @@ class TestStaticNotebookTemplate(unittest.TestCase):
             self.user_config,
             self.server_token,
             self.app_config,
-            self.filename,
+            self.filepath,
             self.code,
+            hash_code(self.code),
             self.cell_ids,
             self.cell_names,
             self.cell_codes,
@@ -207,6 +210,7 @@ class TestStaticNotebookTemplate(unittest.TestCase):
             self.app_config,
             None,
             self.code,
+            hash_code(self.code),
             self.cell_ids,
             self.cell_names,
             self.cell_codes,
@@ -224,8 +228,9 @@ class TestStaticNotebookTemplate(unittest.TestCase):
             self.user_config,
             self.server_token,
             self.app_config,
-            self.filename,
+            self.filepath,
             "",
+            hash_code(self.code),
             [],
             [],
             [],
@@ -253,6 +258,7 @@ class TestStaticNotebookTemplate(unittest.TestCase):
                 _AppConfig(css_file="custom.css"),
                 self.filename,
                 "",
+                hash_code(self.code),
                 [],
                 [],
                 [],

@@ -24,7 +24,11 @@ from marimo._ast.cell import CellConfig, CellId_t, CellImpl
 from marimo._ast.compiler import compile_cell
 from marimo._ast.visitor import ImportData, Name, VariableData
 from marimo._config.config import ExecutionType, MarimoConfig, OnCellChangeType
-from marimo._data.preview_column import get_column_preview
+from marimo._config.settings import GLOBAL_SETTINGS
+from marimo._data.preview_column import (
+    get_column_preview_dataframe,
+    get_column_preview_for_sql,
+)
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._messaging.cell_output import CellChannel
 from marimo._messaging.errors import (
@@ -35,7 +39,6 @@ from marimo._messaging.errors import (
     UnknownError,
 )
 from marimo._messaging.ops import (
-    Alert,
     CellOp,
     CompletedRun,
     DataColumnPreview,
@@ -51,6 +54,7 @@ from marimo._messaging.ops import (
     VariableValues,
 )
 from marimo._messaging.streams import (
+    QueuePipe,
     ThreadSafeStderr,
     ThreadSafeStdin,
     ThreadSafeStdout,
@@ -132,6 +136,7 @@ from marimo._utils.typed_connection import TypedConnection
 from marimo._utils.variables import is_local
 
 if TYPE_CHECKING:
+    import queue
     from collections.abc import Sequence
     from types import ModuleType
 
@@ -273,6 +278,37 @@ def cli_args() -> CLIArgs:
           This dictionary is read-only and cannot be mutated.
     """
     return get_context().cli_args
+
+
+@mddoc
+def notebook_dir() -> pathlib.Path | None:
+    """Get the directory of the currently executing notebook.
+
+    **Returns**:
+
+    - A `pathlib.Path` object representing the directory of the current
+      notebook, or `None` if the notebook's directory cannot be determined.
+
+    **Examples**:
+
+    ```python
+    data_file = mo.notebook_dir() / "data" / "example.csv"
+    # Use the directory to read a file
+    if data_file.exists():
+        print(f"Found data file: {data_file}")
+    else:
+        print("No data file found")
+    ```
+    """
+    try:
+        ctx = get_context()
+    except ContextNotInitializedError:
+        return None
+
+    filename = ctx.filename
+    if filename is not None:
+        return pathlib.Path(filename).parent.absolute()
+    return None
 
 
 @dataclasses.dataclass
@@ -427,7 +463,7 @@ class Kernel:
         self, package_manager: str
     ) -> None:
         return self.enqueue_control_request(
-            InstallMissingPackagesRequest(manager=package_manager)
+            InstallMissingPackagesRequest(manager=package_manager, versions={})
         )
 
     def _update_runtime_from_user_config(self, config: MarimoConfig) -> None:
@@ -520,12 +556,15 @@ class Kernel:
         self.execution_context = ExecutionContext(
             cell_id, setting_element_value
         )
-        with get_context().provide_ui_ids(str(cell_id)), redirect_streams(
-            cell_id,
-            stream=self.stream,
-            stdout=self.stdout,
-            stderr=self.stderr,
-            stdin=self.stdin,
+        with (
+            get_context().provide_ui_ids(str(cell_id)),
+            redirect_streams(
+                cell_id,
+                stream=self.stream,
+                stdout=self.stdout,
+                stderr=self.stderr,
+                stdin=self.stdin,
+            ),
         ):
             modules = None
             try:
@@ -654,9 +693,15 @@ class Kernel:
             if previous_cell is not None:
                 LOGGER.debug("Deleting cell %s", cell_id)
                 previous_children = self._deactivate_cell(cell_id)
+
             error = self._try_registering_cell(
                 cell_id, code, carried_imports=carried_imports
             )
+            if error is not None and previous_cell is not None:
+                # The frontend keeps the cell around in the case of a
+                # registration error; let the FE know the cell is no longer
+                # stale.
+                previous_cell.set_stale(False)
 
             # For any newly imported namespaces, add them to the metadata
             #
@@ -664,7 +709,7 @@ class Kernel:
             # packages used by a notebook; that would have the benefit of
             # discovering transitive dependencies, ie if a notebook used a
             # local module that in turn used packages available on PyPI.
-            if self._should_add_script_metadata():
+            if self._should_update_script_metadata():
                 cell = self.graph.cells.get(cell_id, None)
                 if cell:
                     prev_imports: set[Name] = (
@@ -673,10 +718,8 @@ class Kernel:
                         else set()
                     )
                     to_add = cell.imported_namespaces - prev_imports
-                    to_remove = prev_imports - cell.imported_namespaces
-                    self._add_script_metadata(
-                        import_namespaces_to_add=list(to_add),
-                        import_namespaces_to_remove=list(to_remove),
+                    self._update_script_metadata(
+                        import_namespaces_to_add=list(to_add)
                     )
 
         LOGGER.debug(
@@ -758,8 +801,12 @@ class Kernel:
         missing_modules_before_deletion = (
             self.module_registry.missing_modules()
         )
+
+        temporaries = {
+            name: [VariableData(kind="variable")] for name in cell.temporaries
+        }
         self._delete_variables(
-            cell.variable_data,
+            {**cell.variable_data, **temporaries},
             exclude_defs if exclude_defs is not None else set(),
         )
 
@@ -833,12 +880,9 @@ class Kernel:
         del self.cell_metadata[cell_id]
         cell = self.graph.cells[cell_id]
         cell.import_workspace.imported_defs = set()
-        if self._should_add_script_metadata():
-            self._add_script_metadata(
+        if self._should_update_script_metadata():
+            self._update_script_metadata(
                 import_namespaces_to_add=[],
-                import_namespaces_to_remove=[
-                    im.namespace for im in cell.imports
-                ],
             )
 
         return self._deactivate_cell(cell_id)
@@ -1000,17 +1044,20 @@ class Kernel:
 
         self.errors = all_errors
         for cid in self.errors:
+            cell = self.graph.cells[cid] if cid in self.graph.cells else None
             if (
-                # Cells with syntax errors are not in the graph
-                cid in self.graph.cells
-                and not self.graph.cells[cid].config.disabled
+                cell is not None
+                and not cell.config.disabled
                 and self.graph.is_disabled(cid)
             ):
                 # this may be the first time we're seeing the cell: set its
                 # status
-                self.graph.cells[cid].set_runtime_state(
-                    "disabled-transitively"
-                )
+                cell.set_runtime_state("disabled-transitively")
+
+            if cell is not None:
+                # The error is up-to-date, since we just processed the graph
+                cell.set_stale(False)
+
             CellOp.broadcast_error(
                 data=self.errors[cid],
                 clear_console=True,
@@ -1042,7 +1089,8 @@ class Kernel:
                             for cid in cells_transitioned_to_error
                             if cid in self.graph.children
                         ]
-                    ),
+                    )
+                    - cells_with_errors_after_mutation,
                     cells_that_no_longer_have_errors,
                 )
             )
@@ -1579,9 +1627,10 @@ class Kernel:
         else:
             found = True
             LOGGER.debug("Executing RPC %s", request)
-            with self._install_execution_context(
-                cell_id=function.cell_id
-            ), ctx.provide_ui_ids(str(uuid4())):
+            with (
+                self._install_execution_context(cell_id=function.cell_id),
+                ctx.provide_ui_ids(str(uuid4())),
+            ):
                 # Usually UI element IDs are deterministic, based on
                 # cell id, so that element values can be matched up
                 # with objects on notebook/app re-connection.
@@ -1661,13 +1710,7 @@ class Kernel:
             self.package_manager = create_package_manager(request.manager)
 
         if not self.package_manager.is_manager_installed():
-            Alert(
-                title="Package manager not installed",
-                description=(
-                    f"{request.manager} is not available on your machine."
-                ),
-                variant="danger",
-            ).broadcast()
+            self.package_manager.alert_not_installed()
             return
 
         # Package manager operates on module names
@@ -1688,7 +1731,8 @@ class Kernel:
                 continue
             package_statuses[pkg] = "installing"
             InstallingPackageAlert(packages=package_statuses).broadcast()
-            if await self.package_manager.install(pkg):
+            version = request.versions.get(pkg)
+            if await self.package_manager.install(pkg, version=version):
                 package_statuses[pkg] = "installed"
                 InstallingPackageAlert(packages=package_statuses).broadcast()
             else:
@@ -1704,8 +1748,8 @@ class Kernel:
 
         # If a package was not installed at cell registration time, it won't
         # yet be in the script metadata.
-        if self._should_add_script_metadata():
-            self._add_script_metadata(installed_modules, [])
+        if self._should_update_script_metadata():
+            self._update_script_metadata(installed_modules)
 
         cells_to_run = set(
             cid
@@ -1715,17 +1759,15 @@ class Kernel:
         if cells_to_run:
             await self._if_autorun_then_run_cells(cells_to_run)
 
-    def _should_add_script_metadata(self) -> bool:
+    def _should_update_script_metadata(self) -> bool:
         return (
-            self.user_config["package_management"]["add_script_metadata"]
+            GLOBAL_SETTINGS.MANAGE_SCRIPT_METADATA is True
             and self.app_metadata.filename is not None
             and self.package_manager is not None
         )
 
-    def _add_script_metadata(
-        self,
-        import_namespaces_to_add: List[str],
-        import_namespaces_to_remove: List[str],
+    def _update_script_metadata(
+        self, import_namespaces_to_add: List[str]
     ) -> None:
         filename = self.app_metadata.filename
 
@@ -1734,16 +1776,14 @@ class Kernel:
 
         try:
             LOGGER.debug(
-                "Updating script metadata: %s. Adding namespaces: %s."
-                " Removing namespaces: %s",
+                "Updating script metadata: %s. Adding namespaces: %s.",
                 filename,
                 import_namespaces_to_add,
-                import_namespaces_to_remove,
             )
             self.package_manager.update_notebook_script_metadata(
                 filepath=filename,
                 import_namespaces_to_add=import_namespaces_to_add,
-                import_namespaces_to_remove=import_namespaces_to_remove,
+                import_namespaces_to_remove=[],
             )
         except Exception as e:
             LOGGER.error("Failed to add script metadata to notebook: %s", e)
@@ -1756,35 +1796,43 @@ class Kernel:
 
         The dataset is loaded, and the column is displayed in the frontend.
         """
+        table_name = request.table_name
+        column_name = request.column_name
+        source_type = request.source_type
 
-        if request.source_type == "duckdb":
-            DataColumnPreview(
-                column_name=request.column_name,
-                table_name=request.table_name,
-            ).broadcast()
-            return
+        try:
+            if source_type == "duckdb":
+                column_preview = get_column_preview_for_sql(
+                    table_name=table_name,
+                    column_name=column_name,
+                )
+            elif source_type == "local":
+                dataset = self.globals[table_name]
+                column_preview = get_column_preview_dataframe(dataset, request)
+            else:
+                assert_never(source_type)
 
-        if request.source_type == "local":
-            try:
-                dataset = self.globals[request.table_name]
-                column_preview = get_column_preview(dataset, request)
-                if column_preview is None:
-                    DataColumnPreview(
-                        error=f"Column {request.column_name} not found",
-                        column_name=request.column_name,
-                        table_name=request.table_name,
-                    ).broadcast()
-                else:
-                    column_preview.broadcast()
-            except Exception as e:
+            if column_preview is None:
                 DataColumnPreview(
-                    error=str(e),
-                    column_name=request.column_name,
-                    table_name=request.table_name,
+                    error=f"Column {column_name} not found",
+                    column_name=column_name,
+                    table_name=table_name,
                 ).broadcast()
-            return
-
-        assert_never(request.source_type)
+            else:
+                column_preview.broadcast()
+        except Exception as e:
+            LOGGER.warning(
+                "Failed to get preview for column %s in table %s",
+                column_name,
+                table_name,
+                exc_info=e,
+            )
+            DataColumnPreview(
+                error=str(e),
+                column_name=column_name,
+                table_name=table_name,
+            ).broadcast()
+        return
 
     async def handle_message(self, request: ControlRequest) -> None:
         """Handle a message from the client.
@@ -1845,7 +1893,8 @@ def launch_kernel(
     set_ui_element_queue: QueueType[SetUIElementValueRequest],
     completion_queue: QueueType[CodeCompletionRequest],
     input_queue: QueueType[str],
-    socket_addr: tuple[str, int],
+    stream_queue: queue.Queue[KernelMessage] | None,
+    socket_addr: tuple[str, int] | None,
     is_edit_mode: bool,
     configs: dict[CellId_t, CellConfig],
     app_metadata: AppMetadata,
@@ -1869,24 +1918,33 @@ def launch_kernel(
         profiler = cProfile.Profile()
         profiler.enable()
 
-    n_tries = 0
-    pipe: Optional[TypedConnection[KernelMessage]] = None
-    while n_tries < 100:
-        try:
-            pipe = TypedConnection[KernelMessage].of(
-                connection.Client(socket_addr)
-            )
-            break
-        except Exception:
-            n_tries += 1
-            time.sleep(0.01)
-
-    if n_tries == 100 or pipe is None:
-        LOGGER.debug("Failed to connect to socket.")
-        return
-
     # Create communication channels
-    stream = ThreadSafeStream(pipe=pipe, input_queue=input_queue)
+    if socket_addr is not None:
+        n_tries = 0
+        pipe: Optional[TypedConnection[KernelMessage]] = None
+        while n_tries < 100:
+            try:
+                pipe = TypedConnection[KernelMessage].of(
+                    connection.Client(socket_addr)
+                )
+                break
+            except Exception:
+                n_tries += 1
+                time.sleep(0.01)
+
+        if n_tries == 100 or pipe is None:
+            LOGGER.debug("Failed to connect to socket.")
+            return
+
+        stream = ThreadSafeStream(pipe=pipe, input_queue=input_queue)
+    elif stream_queue is not None:
+        stream = ThreadSafeStream(
+            pipe=QueuePipe(stream_queue), input_queue=input_queue
+        )
+    else:
+        raise RuntimeError(
+            "One of queue_pipe and socket_addr must be non None"
+        )
     # Console output is hidden in run mode, so no need to redirect
     # (redirection of console outputs is not thread-safe anyway)
     stdout = (
@@ -1908,6 +1966,16 @@ def launch_kernel(
         else None
     )
 
+    # In run mode, the kernel should always be in autorun
+    if not is_edit_mode:
+        user_config = user_config.copy()
+        user_config["runtime"]["on_cell_change"] = "autorun"
+
+    def _enqueue_control_request(req: ControlRequest) -> None:
+        control_queue.put_nowait(req)
+        if isinstance(req, SetUIElementValueRequest):
+            set_ui_element_queue.put_nowait(req)
+
     kernel = Kernel(
         cell_configs=configs,
         app_metadata=app_metadata,
@@ -1920,7 +1988,7 @@ def launch_kernel(
         ),
         debugger_override=debugger,
         user_config=user_config,
-        enqueue_control_request=lambda req: control_queue.put_nowait(req),
+        enqueue_control_request=_enqueue_control_request,
     )
     initialize_kernel_context(
         kernel=kernel,

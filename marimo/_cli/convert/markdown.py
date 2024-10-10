@@ -26,7 +26,7 @@ from marimo._ast import codegen
 from marimo._ast.app import App, InternalApp, _AppConfig
 from marimo._ast.cell import Cell, CellConfig
 from marimo._ast.compiler import compile_cell
-from marimo._cli.convert.utils import markdown_to_marimo
+from marimo._convert.utils import markdown_to_marimo
 
 MARIMO_MD = "marimo-md"
 MARIMO_CODE = "marimo-code"
@@ -60,8 +60,6 @@ def app_config_from_root(root: Element) -> _AppConfig:
     # Extract meta data from root attributes.
     config_keys = {
         "title": "app_title",
-        "marimo-layout": "layout_file",
-        "marimo-css": "css_file",
     }
     config = {
         config_keys[key]: value
@@ -72,6 +70,7 @@ def app_config_from_root(root: Element) -> _AppConfig:
     config.update({k: v for k, v in root.items() if k not in config_keys})
     # Remove values particular to markdown saves.
     config.pop("marimo-version", None)
+
     return _AppConfig.from_untrusted_dict(config)
 
 

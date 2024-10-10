@@ -31,6 +31,7 @@
 
 #root .cm-tooltip {
   border-radius: 4px;
+  z-index: 1000;
 
   @apply bg-popover shadow-sm shadow-shade border-border;
 }
@@ -132,6 +133,9 @@
   background: transparent;
   color: var(--sky-11);
   font-weight: 700;
+
+  /* room for buttons */
+  margin-right: 30px;
 
   @apply text-xs;
 }

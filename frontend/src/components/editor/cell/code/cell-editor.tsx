@@ -27,7 +27,7 @@ import { LanguageToggles } from "./language-toggle";
 import { cn } from "@/utils/cn";
 import { saveCellConfig } from "@/core/network/requests";
 import { HideCodeButton } from "../../code/readonly-python-code";
-import { AiCompletionEditor } from "./ai-completion-editor";
+import { AiCompletionEditor } from "../../ai/ai-completion-editor";
 import { useAtom, useAtomValue } from "jotai";
 import { aiCompletionCellAtom } from "@/core/ai/state";
 import { mergeRefs } from "@/utils/mergeRefs";
@@ -37,6 +37,7 @@ import { autoInstantiateAtom, isAiEnabled } from "@/core/config/config";
 import { maybeAddMarimoImport } from "@/core/cells/add-missing-import";
 import { OverridingHotkeyProvider } from "@/core/hotkeys/hotkeys";
 import { useSplitCellCallback } from "../useSplitCell";
+import { MarkdownLanguageAdapter } from "@/core/codemirror/language/markdown";
 
 export interface CellEditorProps
   extends Pick<CellRuntimeState, "status">,
@@ -184,7 +185,7 @@ const CellEditorInternal = ({
       completionConfig: userConfig.completion,
       keymapConfig: userConfig.keymap,
       theme,
-      hotkeys: new OverridingHotkeyProvider(userConfig.keymap.overrides),
+      hotkeys: new OverridingHotkeyProvider(userConfig.keymap.overrides ?? {}),
     });
 
     extensions.push(
@@ -258,7 +259,7 @@ const CellEditorInternal = ({
             reconfigureLanguageEffect(
               editorViewRef.current,
               userConfig.completion,
-              new OverridingHotkeyProvider(userConfig.keymap.overrides),
+              new OverridingHotkeyProvider(userConfig.keymap.overrides ?? {}),
             ),
           ],
         });
@@ -325,14 +326,42 @@ const CellEditorInternal = ({
     };
   }, [editorViewRef]);
 
-  const showCode = async () => {
+  const temporarilyShowCode = useCallback(async () => {
     if (hidden) {
-      await saveCellConfig({ configs: { [cellId]: { hide_code: false } } });
       updateCellConfig({ cellId, config: { hide_code: false } });
-      // Focus on the editor view
       editorViewRef.current?.focus();
+      // Reach one parent up
+      const parent = editorViewParentRef.current?.parentElement;
+      const abortController = new AbortController();
+      parent?.addEventListener(
+        "focusout",
+        () => {
+          requestAnimationFrame(() => {
+            // Skip closing if the focus is still in the parent element
+            const focusedElement = document.activeElement;
+            if (parent?.contains(focusedElement)) {
+              return;
+            }
+            // Hide the code editor
+            updateCellConfig({ cellId, config: { hide_code: true } });
+            editorViewRef.current?.dom.blur();
+            abortController.abort();
+          });
+        },
+        { signal: abortController.signal },
+      );
     }
-  };
+  }, [hidden, cellId, updateCellConfig, editorViewRef]);
+
+  // For a newly created Markdown cell, which defaults to
+  // hidden code, we temporarily show the code editor
+  useEffect(() => {
+    if (code === new MarkdownLanguageAdapter().defaultCode) {
+      return;
+    }
+    temporarilyShowCode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
 
   return (
     <AiCompletionEditor
@@ -369,6 +398,12 @@ const CellEditorInternal = ({
         className="relative w-full"
         onFocus={() => setLastFocusedCellId(cellId)}
       >
+        {hidden && <HideCodeButton onClick={temporarilyShowCode} />}
+        <CellCodeMirrorEditor
+          className={cn(hidden && "opacity-20 h-8 overflow-hidden")}
+          editorView={editorViewRef.current}
+          ref={editorViewParentRef}
+        />
         {!hidden && (
           <div className="absolute top-1 right-5">
             <LanguageToggles
@@ -379,12 +414,6 @@ const CellEditorInternal = ({
             />
           </div>
         )}
-        {hidden && <HideCodeButton onClick={showCode} />}
-        <CellCodeMirrorEditor
-          className={cn(hidden && "opacity-20 h-8 overflow-hidden")}
-          editorView={editorViewRef.current}
-          ref={editorViewParentRef}
-        />
       </div>
     </AiCompletionEditor>
   );
