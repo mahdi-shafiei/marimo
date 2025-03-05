@@ -169,6 +169,45 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/datasources/preview_sql_table_list": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          "application/json": components["schemas"]["PreviewSQLTableListRequest"];
+        };
+      };
+      responses: {
+        /** @description Preview a list of tables in an SQL schema */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["SuccessResponse"];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/documentation/snippets": {
     parameters: {
       query?: never;
@@ -2272,6 +2311,8 @@ export interface components {
           tables: components["schemas"]["DataTable"][];
         }[];
       }[];
+      default_database?: string | null;
+      default_schema?: string | null;
       dialect: string;
       display_name: string;
       name: string;
@@ -2689,6 +2730,7 @@ export interface components {
         /** @enum {string} */
         on_cell_change: "lazy" | "autorun";
         output_max_bytes: number;
+        pythonpath: string[];
         std_stream_max_bytes: number;
         /** @enum {string} */
         watcher_on_save: "lazy" | "autorun";
@@ -2768,6 +2810,7 @@ export interface components {
       | components["schemas"]["Datasets"]
       | components["schemas"]["DataColumnPreview"]
       | components["schemas"]["SQLTablePreview"]
+      | components["schemas"]["SQLTableListPreview"]
       | {
           connections: components["schemas"]["DataSourceConnection"][];
           /** @enum {string} */
@@ -2841,6 +2884,12 @@ export interface components {
       sourceType: "local" | "duckdb" | "connection";
       tableName: string;
     };
+    PreviewSQLTableListRequest: {
+      database: string;
+      engine: string;
+      requestId: string;
+      schema: string;
+    };
     PreviewSQLTableRequest: {
       database: string;
       engine: string;
@@ -2912,6 +2961,13 @@ export interface components {
     };
     /** @enum {string} */
     RuntimeState: "idle" | "queued" | "running" | "disabled-transitively";
+    SQLTableListPreview: {
+      error?: string | null;
+      /** @enum {string} */
+      name: "sql-table-list-preview";
+      request_id: string;
+      tables: components["schemas"]["DataTable"][];
+    };
     SQLTablePreview: {
       error?: string | null;
       /** @enum {string} */
@@ -2945,9 +3001,7 @@ export interface components {
     SendUIElementMessage: {
       buffers?: string[] | null;
       message: {
-        [key: string]: {
-          [key: string]: unknown;
-        };
+        [key: string]: unknown;
       };
       /** @enum {string} */
       name: "send-ui-element-message";
