@@ -11,7 +11,11 @@ import {
   foldInside,
   LanguageSupport,
 } from "@codemirror/language";
-import type { CompletionConfig, LSPConfig } from "@/core/config/config-schema";
+import type {
+  CompletionConfig,
+  DiagnosticsConfig,
+  LSPConfig,
+} from "@/core/config/config-schema";
 import type { HotkeyProvider } from "@/core/hotkeys/hotkeys";
 import type { PlaceholderType } from "../config/extension";
 import {
@@ -20,11 +24,11 @@ import {
 } from "../placeholder/extensions";
 import {
   LanguageServerClient,
-  languageServerWithTransport,
+  languageServerWithClient,
+  documentUri,
 } from "@marimo-team/codemirror-languageserver";
 import { resolveToWsUrl } from "@/core/websocket/createWsUrl";
 import { WebSocketTransport } from "@open-rpc/client-js";
-import { CellDocumentUri } from "../lsp/types";
 import { NotebookLanguageServerClient } from "../lsp/notebook-lsp";
 import { once } from "@/utils/once";
 import { getFeatureFlag } from "@/core/config/feature-flag";
@@ -36,6 +40,7 @@ import type { CellId } from "@/core/cells/ids";
 import { cellActionsState } from "../cells/state";
 import { openFile } from "@/core/network/requests";
 import { Logger } from "@/utils/Logger";
+import { CellDocumentUri } from "../lsp/types";
 
 const pylspTransport = once(() => {
   const transport = new WebSocketTransport(resolveToWsUrl("/lsp/pylsp"));
@@ -46,7 +51,6 @@ const lspClient = once((lspConfig: LSPConfig) => {
   const lspClientOpts = {
     transport: pylspTransport(),
     rootUri: `file://${Paths.dirname(getFilenameFromDOM() ?? "/")}`,
-    languageId: "python",
     workspaceFolders: [],
   };
   const config = lspConfig?.pylsp;
@@ -112,7 +116,6 @@ const lspClient = once((lspConfig: LSPConfig) => {
   return new NotebookLanguageServerClient(
     new LanguageServerClient({
       ...lspClientOpts,
-      documentUri: "file:///unused.py", // Incorrect types
       autoClose: false,
     }),
     settings,
@@ -143,36 +146,12 @@ export class PythonLanguageAdapter implements LanguageAdapter {
     completionConfig: CompletionConfig,
     _hotkeys: HotkeyProvider,
     placeholderType: PlaceholderType,
-    lspConfig: LSPConfig,
+    lspConfig: LSPConfig & { diagnostics: DiagnosticsConfig },
   ): Extension[] {
     const getCompletionsExtension = () => {
-      if (getFeatureFlag("lsp") && lspConfig?.pylsp?.enabled) {
-        const client = lspClient(lspConfig);
-        return languageServerWithTransport({
-          client: client as unknown as LanguageServerClient,
-          documentUri: CellDocumentUri.of(cellId),
-          transport: pylspTransport(),
-          rootUri: "file:///",
-          languageId: "python",
-          workspaceFolders: [],
-          allowHTMLContent: true,
-          onGoToDefinition: (result) => {
-            Logger.debug("onGoToDefinition", result);
-            if (client.documentUri === result.uri) {
-              // Local definition
-              return;
-            }
-
-            openFile({
-              path: result.uri.replace("file://", ""),
-            });
-          },
-        });
-      }
-
-      // Whether or not to require keypress to activate autocompletion (default
-      // keymap is Ctrl+Space)
-      return autocompletion({
+      const autocompleteOptions = {
+        // Whether or not to require keypress to activate autocompletion (default
+        // keymap is Ctrl+Space)
         activateOnTyping: completionConfig.activate_on_typing,
         // The Cell component handles the blur event. `closeOnBlur` is too
         // aggressive and doesn't let the user click into the completion info
@@ -181,6 +160,43 @@ export class PythonLanguageAdapter implements LanguageAdapter {
         // tooltip is not part of the editable DOM tree:
         // https://discuss.codemirror.net/t/adding-click-event-listener-to-autocomplete-tooltip-info-panel-is-not-working/4741
         closeOnBlur: false,
+      };
+      const hoverOptions = {
+        hideOnChange: true,
+      };
+
+      if (getFeatureFlag("lsp") && lspConfig?.pylsp?.enabled) {
+        const client = lspClient(lspConfig);
+        return [
+          languageServerWithClient({
+            client: client as unknown as LanguageServerClient,
+            languageId: "python",
+            allowHTMLContent: true,
+            hoverConfig: hoverOptions,
+            completionConfig: autocompleteOptions,
+            // Default to false
+            diagnosticsEnabled: lspConfig.diagnostics?.enabled ?? false,
+            // Match completions before the cursor is at the end of a word,
+            // after a dot, after a slash, after a comma.
+            completionMatchBefore: /(\w+|\w+\.|\/|,)$/,
+            onGoToDefinition: (result) => {
+              Logger.debug("onGoToDefinition", result);
+              if (client.documentUri === result.uri) {
+                // Local definition
+                return;
+              }
+
+              openFile({
+                path: result.uri.replace("file://", ""),
+              });
+            },
+          }),
+          documentUri.of(CellDocumentUri.of(cellId)),
+        ];
+      }
+
+      return autocompletion({
+        ...autocompleteOptions,
         override: [completer],
       });
     };

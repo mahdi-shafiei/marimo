@@ -38,12 +38,23 @@ class CompletionConfig(TypedDict):
 
     - `activate_on_typing`: if `False`, completion won't activate
     until the completion hotkey is entered
-    - `copilot`: if `True`, enable the GitHub Copilot language server
+    - `copilot`: one of `"github"`, `"codeium"`, or `"custom"`
+    - `codeium_api_key`: the Codeium API key
+    - `api_key`: the API key for the LLM provider, when `copilot` is `"custom"`
+    - `model`: the model to use, when `copilot` is `"custom"`
+    - `base_url`: the base URL for the API, when `copilot` is `"custom"`
     """
 
     activate_on_typing: bool
-    copilot: Union[bool, Literal["github", "codeium"]]
+    copilot: Union[bool, Literal["github", "codeium", "custom"]]
+
+    # Codeium
     codeium_api_key: NotRequired[Optional[str]]
+
+    # Custom
+    api_key: NotRequired[Optional[str]]
+    model: NotRequired[Optional[str]]
+    base_url: NotRequired[Optional[str]]
 
 
 @mddoc
@@ -125,7 +136,7 @@ class RuntimeConfig(TypedDict):
 
 # TODO(akshayka): remove normal, migrate to compact
 # normal == compact
-WidthType = Literal["normal", "compact", "medium", "full"]
+WidthType = Literal["normal", "compact", "medium", "full", "columns"]
 Theme = Literal["light", "dark", "system"]
 
 
@@ -253,7 +264,11 @@ class GoogleAiConfig(TypedDict, total=False):
 
 @dataclass
 class PythonLanguageServerConfig(TypedDict, total=False):
-    """Configuration options for Python Language Server."""
+    """
+    Configuration options for Python Language Server.
+
+    pylsp handles completion, hover, go-to-definition, and diagnostics.
+    """
 
     enabled: bool
     enable_mypy: bool
@@ -274,6 +289,18 @@ class LanguageServersConfig(TypedDict, total=False):
     """
 
     pylsp: PythonLanguageServerConfig
+
+
+@dataclass
+class DiagnosticsConfig(TypedDict, total=False):
+    """Configuration options for diagnostics.
+
+    **Keys.**
+
+    - `enabled`: if `True`, diagnostics will be shown in the editor
+    """
+
+    enabled: bool
 
 
 @dataclass
@@ -320,6 +347,7 @@ class MarimoConfig(TypedDict):
     package_management: PackageManagementConfig
     ai: NotRequired[AiConfig]
     language_servers: NotRequired[LanguageServersConfig]
+    diagnostics: NotRequired[DiagnosticsConfig]
     experimental: NotRequired[dict[str, Any]]
     snippets: NotRequired[SnippetsConfig]
     datasources: NotRequired[DatasourcesConfig]
@@ -340,6 +368,7 @@ class PartialMarimoConfig(TypedDict, total=False):
     package_management: PackageManagementConfig
     ai: NotRequired[AiConfig]
     language_servers: NotRequired[LanguageServersConfig]
+    diagnostics: NotRequired[DiagnosticsConfig]
     experimental: NotRequired[dict[str, Any]]
     snippets: SnippetsConfig
     datasources: NotRequired[DatasourcesConfig]

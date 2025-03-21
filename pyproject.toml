@@ -32,7 +32,7 @@ dependencies = [
     # - 0.26.1 introduced lifespans, which we use
     # - starlette 0.36.0 introduced a bug
     "starlette>=0.26.1,!=0.36.0",
-    # websockets for use with starlette
+    # websockets for use with starlette, and for lsp
     "websockets >= 10.0.0",
     # pycrdt for collaborative editing
     "pycrdt >=0.11.0,<0.12.0",
@@ -115,6 +115,11 @@ dev = [
     "openai>=1.55.3",
 ]
 
+lsp = [
+    "python-lsp-server>=1.10.0",
+    "python-lsp-ruff>=2.0.0",
+]
+
 docs = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.5.49",
@@ -192,6 +197,7 @@ dependencies = [
     "types-Pillow~=10.2.0.20240520",
     "types-Pygments~=2.18.0.20240506",
     "types-psutil~=5.9.5.20240516",
+    "types-redis~=4.6.0.20241004",
     "types-Markdown~=3.6.0.20240316",
     "types-PyYAML~=6.0.12.20240808",
 ]
@@ -244,7 +250,7 @@ extra-dependencies = [
     "pyarrow",
     "pyarrow_hotfix",
     "altair>=5.4.0",
-    "polars~=1.9.0",
+    "polars~=1.24.0",
     "sqlglot>=23.4",
     "sqlalchemy>=2.0.38",
     "pandas>=1.5.3",
@@ -432,6 +438,7 @@ banned-module-level-imports = [
     "ipython",
     "anywidget",
     "packaging",
+    "redis",
     "typing_extensions",
 ]
 

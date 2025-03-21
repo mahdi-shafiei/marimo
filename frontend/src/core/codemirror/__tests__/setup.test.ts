@@ -58,7 +58,11 @@ function getOpts() {
       pylsp: {
         enabled: false,
       },
+      diagnostics: {
+        enabled: false,
+      },
     },
+    diagnosticsConfig: {},
     hotkeys: new OverridingHotkeyProvider({}),
     theme: "light",
   } as const;
