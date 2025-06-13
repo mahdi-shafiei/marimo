@@ -2,16 +2,24 @@
 "use no memo";
 
 import type { Table } from "@tanstack/react-table";
+import { range } from "lodash-es";
 import {
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
 } from "lucide-react";
-
 import { Button } from "@/components/ui/button";
 import { PluralWord } from "@/utils/pluralize";
-import { range } from "lodash-es";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import type { DataTableSelection } from "./types";
 
 interface DataTablePaginationProps<TData> {
@@ -101,9 +109,42 @@ export const DataTablePagination = <TData,>({
   );
   const totalPages = table.getPageCount();
 
+  const pageSize = table.getState().pagination.pageSize;
+
+  // Ensure unique page sizes
+  const pageSizeSet = new Set([5, 10, 25, 50, 100, pageSize]);
+  const pageSizes = [...pageSizeSet].sort((a, b) => a - b);
+
   return (
     <div className="flex flex-1 items-center justify-between px-2">
-      <div className="text-sm text-muted-foreground">{renderTotal()}</div>
+      <div className="flex items-center gap-2">
+        <div className="text-sm text-muted-foreground">{renderTotal()}</div>
+        <div className="flex items-center gap-1 text-xs whitespace-nowrap mr-1">
+          <Select
+            value={pageSize.toString()}
+            onValueChange={(value) => table.setPageSize(Number(value))}
+          >
+            <SelectTrigger className="w-11 h-[18px] !shadow-none !hover:shadow-none !ring-0 border-border text-xs p-1">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectLabel>Rows per page</SelectLabel>
+                {[...pageSizes].map((size) => {
+                  const sizeStr = size.toString();
+                  return (
+                    <SelectItem key={size} value={sizeStr}>
+                      {sizeStr}
+                    </SelectItem>
+                  );
+                })}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <span>/ page</span>
+        </div>
+      </div>
+
       <div className="flex items-end space-x-2">
         <Button
           size="xs"

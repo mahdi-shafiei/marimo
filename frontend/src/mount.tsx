@@ -1,40 +1,48 @@
 /* Copyright 2024 Marimo. All rights reserved. */
-import { createRoot } from "react-dom/client";
-import { ThemeProvider } from "./theme/ThemeProvider";
-import { ErrorBoundary } from "./components/editor/boundary/ErrorBoundary";
-import { MarimoApp, preloadPage } from "./core/MarimoApp";
-import { reportVitals } from "./utils/vitals";
+
+import type * as api from "@marimo-team/marimo-api";
 import { Provider } from "jotai";
-import { store } from "./core/state/jotai";
-import { maybeRegisterVSCodeBindings } from "./core/vscode/vscode-bindings";
-import { patchFetch, patchVegaLoader } from "./core/static/files";
-import { isStaticNotebook } from "./core/static/static-state";
-import { vegaLoader } from "./plugins/impl/vega/loader";
-import { initializePlugins } from "./plugins/plugins";
-import { cleanupAuthQueryParams } from "./core/network/auth";
+import { createRoot } from "react-dom/client";
+import { z } from "zod";
+import {
+  appConfigAtom,
+  configOverridesAtom,
+  userConfigAtom,
+} from "@/core/config/config";
+import { getFilenameFromDOM } from "@/core/dom/htmlUtils";
+import { getMarimoCode } from "@/core/meta/globals";
+import {
+  marimoVersionAtom,
+  serverTokenAtom,
+  showCodeInRunModeAtom,
+} from "@/core/meta/state";
+import { Logger } from "@/utils/Logger";
+import { ErrorBoundary } from "./components/editor/boundary/ErrorBoundary";
+import { notebookAtom } from "./core/cells/cells";
+import { notebookStateFromSession } from "./core/cells/session";
 import {
   parseAppConfig,
   parseConfigOverrides,
   parseUserConfig,
 } from "./core/config/config-schema";
+import { MarimoApp, preloadPage } from "./core/MarimoApp";
 import { type AppMode, initialModeAtom, viewStateAtom } from "./core/mode";
-import { codeAtom, filenameAtom } from "./core/saving/file-state";
-import { Logger } from "@/utils/Logger";
-import { z } from "zod";
-import { getFilenameFromDOM } from "@/core/dom/htmlUtils";
+import { cleanupAuthQueryParams } from "./core/network/auth";
 import {
-  showCodeInRunModeAtom,
-  marimoVersionAtom,
-  serverTokenAtom,
-} from "@/core/meta/state";
-import { appConfigAtom, userConfigAtom } from "@/core/config/config";
-import { configOverridesAtom } from "@/core/config/config";
-import { getMarimoCode } from "@/core/meta/globals";
-import type * as api from "@marimo-team/marimo-api";
-import { notebookAtom } from "./core/cells/cells";
-import { notebookStateFromSession } from "./core/cells/session";
+  DEFAULT_RUNTIME_CONFIG,
+  runtimeConfigAtom,
+} from "./core/runtime/config";
+import { codeAtom, filenameAtom } from "./core/saving/file-state";
+import { store } from "./core/state/jotai";
+import { patchFetch, patchVegaLoader } from "./core/static/files";
+import { isStaticNotebook } from "./core/static/static-state";
+import { maybeRegisterVSCodeBindings } from "./core/vscode/vscode-bindings";
 import type { FileStore } from "./core/wasm/store";
 import { notebookFileStore } from "./core/wasm/store";
+import { vegaLoader } from "./plugins/impl/vega/loader";
+import { initializePlugins } from "./plugins/plugins";
+import { ThemeProvider } from "./theme/ThemeProvider";
+import { reportVitals } from "./utils/vitals";
 
 let hasMounted = false;
 
@@ -215,6 +223,21 @@ const mountOptionsSchema = z.object({
       .passthrough()
       .transform((val) => val as api.Notebook["NotebookV1"]),
   ]),
+
+  /**
+   * Runtime configs
+   */
+  runtimeConfig: z
+    .array(
+      z
+        .object({
+          url: z.string(),
+          authToken: z.string().nullish(),
+        })
+        .passthrough(),
+    )
+    .nullish()
+    .transform((val) => val ?? []),
 });
 
 function initStore(options: unknown) {
@@ -223,7 +246,7 @@ function initStore(options: unknown) {
     Logger.error("Invalid marimo mount options", parsedOptions.error);
     throw new Error("Invalid marimo mount options");
   }
-  const mode = parsedOptions.data.mode as AppMode;
+  const mode = parsedOptions.data.mode;
   preloadPage(mode);
 
   // Initialize file stores if provided
@@ -260,6 +283,21 @@ function initStore(options: unknown) {
   );
   store.set(userConfigAtom, parseUserConfig(parsedOptions.data.config));
   store.set(appConfigAtom, parseAppConfig(parsedOptions.data.appConfig));
+
+  // Runtime config
+  if (parsedOptions.data.runtimeConfig.length > 0) {
+    const firstRuntimeConfig = parsedOptions.data.runtimeConfig[0];
+    Logger.debug("⚡ Runtime URL", firstRuntimeConfig.url);
+    store.set(runtimeConfigAtom, {
+      ...firstRuntimeConfig,
+      serverToken: parsedOptions.data.serverToken,
+    });
+  } else {
+    store.set(runtimeConfigAtom, {
+      ...DEFAULT_RUNTIME_CONFIG,
+      serverToken: parsedOptions.data.serverToken,
+    });
+  }
 
   // Session/notebook
   const notebook = notebookStateFromSession(
