@@ -1,12 +1,9 @@
 /* Copyright 2024 Marimo. All rights reserved. */
+
+import { useChat } from "@ai-sdk/react";
+import type { ReactCodeMirrorRef } from "@uiw/react-codemirror";
+import type { Message } from "ai/react";
 import { useAtom, useAtomValue } from "jotai";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import {
   BotMessageSquareIcon,
   ClockIcon,
@@ -14,41 +11,44 @@ import {
   PlusIcon,
 } from "lucide-react";
 import {
-  chatStateAtom,
+  type Dispatch,
+  memo,
+  type SetStateAction,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { addMessageToChat } from "@/core/ai/chat-utils";
+import {
   activeChatAtom,
   type Chat,
   type ChatState,
+  chatStateAtom,
 } from "@/core/ai/state";
-import {
-  useState,
-  useRef,
-  type SetStateAction,
-  type Dispatch,
-  memo,
-  useEffect,
-  useMemo,
-} from "react";
-import { generateUUID } from "@/utils/uuid";
-import type { Message } from "ai/react";
-import { useChat } from "@ai-sdk/react";
-import { PromptInput } from "../editor/ai/add-cell-with-ai";
-import type { ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { Tooltip, TooltipProvider } from "../ui/tooltip";
-import { asURL } from "@/utils/url";
-import { API } from "@/core/network/api";
-import { cn } from "@/utils/cn";
-import { MarkdownRenderer } from "./markdown-renderer";
-import { Logger } from "@/utils/Logger";
 import { getCodes } from "@/core/codemirror/copilot/getCodes";
-import { getAICompletionBody } from "../editor/ai/completion-utils";
-import { addMessageToChat } from "@/core/ai/chat-utils";
+import { aiAtom, aiEnabledAtom } from "@/core/config/config";
+import { useRuntimeManager } from "@/core/runtime/config";
 import { ErrorBanner } from "@/plugins/impl/common/error-banner";
 import { type ResolvedTheme, useTheme } from "@/theme/useTheme";
-import { aiAtom, aiEnabledAtom } from "@/core/config/config";
+import { cn } from "@/utils/cn";
+import { timeAgo } from "@/utils/dates";
+import { Logger } from "@/utils/Logger";
+import { generateUUID } from "@/utils/uuid";
 import { useOpenSettingsToTab } from "../app-config/state";
+import { PromptInput } from "../editor/ai/add-cell-with-ai";
+import { getAICompletionBody } from "../editor/ai/completion-utils";
 import { PanelEmptyState } from "../editor/chrome/panels/empty-state";
 import { CopyClipboardIcon } from "../icons/copy-icon";
-import { timeAgo } from "@/utils/dates";
+import { Tooltip, TooltipProvider } from "../ui/tooltip";
+import { MarkdownRenderer } from "./markdown-renderer";
 import { ReasoningAccordion } from "./reasoning-accordion";
 
 interface ChatHeaderProps {
@@ -104,7 +104,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 />
               )}
               {chats.map((chat) => (
-                <div
+                <button
                   key={chat.id}
                   className={cn(
                     "p-3 rounded-md cursor-pointer hover:bg-accent",
@@ -118,7 +118,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   <div className="text-sm text-muted-foreground">
                     {timeAgo(chat.updatedAt)}
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           </ScrollArea>
@@ -171,16 +171,6 @@ const ChatMessage: React.FC<ChatMessageProps> = memo(
                 return;
               }
               onEdit(index, newValue);
-              if (chatState.activeChatId) {
-                setChatState((prev: ChatState) =>
-                  addMessageToChat(
-                    prev,
-                    chatState.activeChatId,
-                    "user",
-                    newValue,
-                  ),
-                );
-              }
             }}
             onClose={() => {
               // noop
@@ -195,12 +185,13 @@ const ChatMessage: React.FC<ChatMessageProps> = memo(
           {message.parts?.map((part, i) => {
             switch (part.type) {
               case "text":
-                return <MarkdownRenderer content={part.text} />;
+                return <MarkdownRenderer key={i} content={part.text} />;
 
               case "reasoning":
                 return (
                   <ReasoningAccordion
                     reasoning={part.reasoning}
+                    key={i}
                     index={i}
                     isStreaming={
                       index === totalMessages - 1 && isStreamingReasoning
@@ -225,7 +216,7 @@ interface ChatInputProps {
   setInput: (value: string) => void;
   onSubmit: (e: KeyboardEvent | undefined, value: string) => void;
   theme: ResolvedTheme;
-  inputRef: React.RefObject<ReactCodeMirrorRef>;
+  inputRef: React.RefObject<ReactCodeMirrorRef | null>;
 }
 
 const ChatInput: React.FC<ChatInputProps> = memo(
@@ -276,6 +267,7 @@ const ChatPanelBody = () => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
+  const runtimeManager = useRuntimeManager();
 
   const {
     messages,
@@ -303,8 +295,8 @@ const ChatPanelBody = () => {
     keepLastMessageOnError: true,
     // Throttle the messages and data updates to 100ms
     experimental_throttle: 100,
-    api: asURL("api/ai/chat").toString(),
-    headers: API.headers(),
+    api: runtimeManager.getAiURL("chat").toString(),
+    headers: runtimeManager.headers(),
     experimental_prepareRequestBody: (options) => {
       return {
         ...options,
@@ -409,11 +401,33 @@ const ChatPanelBody = () => {
   };
 
   const handleMessageEdit = (index: number, newValue: string) => {
+    // Truncate both useChat and storage
     setMessages((messages) => messages.slice(0, index));
+    if (chatState.activeChatId) {
+      setChatState((prev) => ({
+        ...prev,
+        chats: prev.chats.map((chat) =>
+          chat.id === chatState.activeChatId
+            ? {
+                ...chat,
+                messages: chat.messages.slice(0, index),
+                updatedAt: Date.now(),
+              }
+            : chat,
+        ),
+      }));
+    }
+
+    // Add user message to useChat and storage
     append({
       role: "user",
       content: newValue,
     });
+    if (chatState.activeChatId) {
+      setChatState((prev) =>
+        addMessageToChat(prev, chatState.activeChatId, "user", newValue),
+      );
+    }
   };
 
   const handleChatInputSubmit = (

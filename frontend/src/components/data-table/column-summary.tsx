@@ -1,14 +1,14 @@
 /* Copyright 2024 Marimo. All rights reserved. */
-import React, { useContext } from "react";
-import { ColumnChartSpecModel } from "./chart-spec-model";
-import { useTheme } from "@/theme/useTheme";
-import { prettyNumber, prettyScientificNumber } from "@/utils/numbers";
-import { prettyDate } from "@/utils/dates";
-import { DelayMount } from "../utils/delay-mount";
-import { ChartSkeleton } from "../charts/chart-skeleton";
-import { logNever } from "@/utils/assertNever";
-import { DatePopover } from "./date-popover";
+import React from "react";
 import { createBatchedLoader } from "@/plugins/impl/vega/batched";
+import { useTheme } from "@/theme/useTheme";
+import { logNever } from "@/utils/assertNever";
+import { prettyDate } from "@/utils/dates";
+import { prettyNumber, prettyScientificNumber } from "@/utils/numbers";
+import { ChartSkeleton } from "../charts/chart-skeleton";
+import { DelayMount } from "../utils/delay-mount";
+import { ColumnChartSpecModel } from "./chart-spec-model";
+import { DatePopover } from "./date-popover";
 
 export const ColumnChartContext = React.createContext<
   ColumnChartSpecModel<unknown>
@@ -29,7 +29,7 @@ const batchedLoader = createBatchedLoader();
 export const TableColumnSummary = <TData, TValue>({
   columnId,
 }: Props<TData, TValue>) => {
-  const chartSpecModel = useContext(ColumnChartContext);
+  const chartSpecModel = React.use(ColumnChartContext);
   const { theme } = useTheme();
   const { spec, type, stats } = chartSpecModel.getHeaderSummary(columnId);
   let chart: React.ReactNode = null;
